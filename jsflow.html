@@ -1,0 +1,1334 @@
+<html>
+<head>
+<style>
+<tr.code { margin: 0; padding: 0; border: 0; }
+td.code { margin: 0; padding: 0; border: 0; }
+table.code { border-collapse: collapse; border-spacing: 0; }
+table.code_vars {  }
+input.code { margin: 0; padding: 0; border: 1; width: 400px; font-family: monospace; outline: none; spellcheck: 0; }
+tr.code_vars { vertical-align: top; }
+td.code_vars { vertical-align: top; }
+input.speed { width: 300px; }
+</style>
+</head>
+<body onload="start()">
+
+<table>
+<tr> <td style='vertical-align: top'>
+<table class='code' id='codearea' cellspacing=0>
+<tr class='code' id='linewhole1'>
+  <td class='code' id='linelabel1'>1</td>
+  <td class='code'><input class='code' id='line1' size=40 onkeydown='code_change_keydown()' onkeypress='code_change_keydown()' onkeyup='code_change_keyup()' type="text" spellcheck="false"></input></td></tr>
+</table>
+</td>
+<td style='vertical-align: top'>
+<table id='code_vars' class='code_vars'>
+</table>
+</td>
+<td style='vertical-align: top'>
+<canvas id='canvas' width='500' height='500'>
+</canvas>
+</td>
+</tr>
+<tr>
+<td>
+  <table>
+   <tr>
+     <td>0</td><td><input class="speed" type="range" min="0" max="100" value="10" class="speed" id="speed"></td><td>Le Max</td>
+     <td><input class="reset" type="submit" value="Reset" onclick='reset()'></input></td>
+   </tr>
+  </table>
+</td>
+</tr>
+</table>
+
+
+
+<script>
+var current_line = 1;
+var prev_line = 0;
+var timer = null;
+var has_changed = false;
+
+function start() {
+    timer = setInterval(run, 100);
+}
+
+// -------------------------------------------------------------------
+//  Utility functions
+// -------------------------------------------------------------------
+
+function deepEqual(a, b) {
+    if (a === b) {
+        return true;
+    } else if (a == null) {
+        return b == null;
+    } else if (b == null) {
+        return a == null;
+    } else if (typeof a !== typeof b) {
+        return false;
+    } else if (typeof a == "object") {
+        if (Object.keys(a).length != Object.keys(b).length) {
+            return false;
+        }
+        for (var key in a) {
+            if (!b.hasOwnProperty(key)) {
+                return false;
+            }
+            if (!deepEqual(a[key], b[key])) {
+                return false;
+            }
+        }
+        return true;
+    } else {
+        return false;
+    }
+}
+
+// -------------------------------------------------------------------
+//  Grab total text from editor
+// -------------------------------------------------------------------
+
+function get_text() {
+    var text = '{';
+    for (var i = 1;;i++) {
+       var line_el = document.getElementById('line' + i);
+       if (!line_el) {
+           break;
+       }
+       text += line_el.value + '\n';
+    }
+    return text + '}';
+}
+
+// -------------------------------------------------------------------
+//  Javascript tokenizer
+// -------------------------------------------------------------------
+
+function is_alpha(c) {
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95;
+}
+
+function is_num(c) {
+    return (c >= 48) && (c <= 57);
+}
+
+function is_alnum(c) {
+    return is_alpha(c) || is_num(c);
+}
+
+function is_special(c) {
+    return (c >= 33 && c <= 47) ||
+           (c >= 58 && c <= 63) ||
+           (c >= 91 && c <= 94) ||
+           (c >= 123 && c <= 126);
+}
+
+var keyword_table = { 'this' : 'THIS',
+                      'null' : 'NULL',
+                      'new' : 'NEW',
+                      'delete' : 'DELETE',
+                      'void' : 'VOID',
+                      'typeof' : 'TYPEOF',
+                      'instanceof' : 'INSTANCEOF',
+                      'in' : 'IN',
+                      'if' : 'IF',
+                      'else' : 'ELSE',
+                      'do' : 'DO',
+                      'while' : 'WHILE',
+                      'for' : 'FOR',
+                      'var' : 'VAR',
+                      'continue' : 'CONTINUE',
+                      'break' : 'BREAK',
+                      'return' : 'RETURN',
+                      'with' : 'WITH',
+                      'switch' : 'SWITCH',
+                      'case' : 'CASE',
+                      'default' : 'DEFAULT',
+                      'throw' : 'THROW',
+                      'try' : 'TRY',
+                      'catch' : 'CATCH',
+                      'finally' : 'FINALLY',
+                      'function' : 'FUNCTION',
+                      'import' : 'IMPORT',
+                      'true' : 'TRUE',
+                      'false' : 'FALSE' };
+
+function token_at_whitespace(text, i) {
+    var j = i;
+    while ((ch = text.charCodeAt(j)) <= 32) {
+        j++;
+    }
+    return {token: 'SPACE', lexeme: text.substring(i,j), pos: i, len: j-i};
+}
+
+function token_at_identifier(text, i) {
+   for (j = i; j < text.length && is_alnum(text.charCodeAt(j)); j++) { }
+   var lexeme = text.substring(i, j);
+   var pos = i;
+   var len = j-i;
+   var keyw = keyword_table[lexeme];
+   if (keyw) {
+       if (keyw == 'TRUE' || keyw == 'FALSE') keyw = 'BOOL';
+       return {token: keyw, lexeme: lexeme, pos: pos, len: len};
+   }
+   return {token: 'ID', lexeme: lexeme, pos: pos, len: len};
+}
+
+function token_at_number(text, i) {
+   for (j = i; j < text.length && is_num(text.charCodeAt(j)); j++) { }
+   return {token: 'NUM', lexeme: text.substring(i, j), pos: i, len: j-i};
+}
+
+var operator_table = [
+    { seq:[33,61,61], op:'NEQV' },
+    { seq:[33,61], op:'NEQ' },
+    { seq:[33], op:'LOGNEG' },
+    { seq:[37,61], op:'MODASGN' },
+    { seq:[37], op:'MOD' },
+    { seq:[38,38], op:'LOGAND' },
+    { seq:[38,61], op:'ANDASGN' },
+    { seq:[38], op:'BITAND' },
+    { seq:[40], op:'LPAREN' },
+    { seq:[41], op:'RPAREN' },
+    { seq:[42,61], op:'MULASGN' },
+    { seq:[42], op:'MUL' },
+    { seq:[43,43], op:'INC' },
+    { seq:[43,61], op: 'PLUSASGN' },
+    { seq:[43], op:'PLUS' },
+    { seq:[44], op:'COMMA' },
+    { seq:[45,45,45], op: 'SECTION' },
+    { seq:[45,45], op: 'DEC' },
+    { seq:[45,61], op: 'MINUSASGN' },
+    { seq:[45], op:'MINUS' },
+    { seq:[46], op:'DOT' },
+    { seq:[47,61], op:'DIVASGN' },
+    { seq:[47], op:'DIV' },
+    { seq:[58], op:'COLON' },
+    { seq:[59], op:'SEMI' },
+    { seq:[60,60,61], op:'LSHIFTASGN' },
+    { seq:[60,60], op:'LSHIFT' },
+    { seq:[60,61], op:'LEQ' },
+    { seq:[60], op:'LE' },
+    { seq:[61,61,61], op:'EQV' },
+    { seq:[61,61], op:'EQ' },
+    { seq:[61], op:'ASSIGN' },
+    { seq:[62,62,62,61], op:'RRSHIFTASGN' },
+    { seq:[62,62,61], op:'RSHIFTASGN' },
+    { seq:[62,62], op:'RRSHIFT' },
+    { seq:[62,62], op:'RSHIFT' },
+    { seq:[62], op:'GR' },
+    { seq:[62,61], op:'GEQ' },
+    { seq:[91], op:'LBRACK' },
+    { seq:[93], op:'RBRACK' },
+    { seq:[94,61], op:'XORASGN' },
+    { seq:[94], op:'BITXOR' },
+    { seq:[123], op:'LBRACE' },
+    { seq:[124,124], op:'LOGOR' },
+    { seq:[124,61], op:'ORASGN' },
+    { seq:[124], op:'BITOR' },
+    { seq:[125], op:'RBRACE' },
+    { seq:[126], op:'BITNOT' }
+];
+
+function token_at_operator(text, i) {
+    for (var k = 0; k < operator_table.length; k++) {
+        var op_matcher = operator_table[k];
+        var j;
+        for (j = 0; j < op_matcher.seq.length && text.charCodeAt(i+j) == op_matcher.seq[j]; j++) {
+        }
+        if (j == op_matcher.seq.length) {
+            return {token: op_matcher.op, lexeme: text.substring(i,i+j), pos: i, len: j};
+        }
+    }
+    for (j = i; j < text.length && is_special(text.charCodeAt(j)); j++) { }
+    return {token: 'ERROR', lexeme: text.substring(i,j), pos: i, len: 1};
+}
+
+function token_at(text, i) {
+    var c = text.charCodeAt(i);
+    if (c <= 32) {
+         return token_at_whitespace(text, i);
+    } else if (is_num(c)) {
+         return token_at_number(text, i);
+    } else if (is_alpha(c)) {
+         return token_at_identifier(text, i);
+    } else if (is_special(c)) {
+         if (c == 39 || c == 34) {
+             return token_at_string(text, i, c);
+         } else {
+             return token_at_operator(text, i);
+         }
+    }
+}
+
+function token_at_string(text, i, c) {
+    var j = i;
+    var found_end = false;
+    while (j < text.length) {
+        j++;
+        var ch = text.charCodeAt(j);
+        if (j < text.length) {
+            if (ch == '\\') {
+                 j++;
+		 continue;
+            }
+            if (ch == c) {
+		found_end = true;
+                j++;
+                break;
+            }
+        }
+    }
+    if (!found_end) {
+        return {token: 'ERROR', lexeme: text.substring(i,j), pos: i, len: j-i,
+		message: 'missing string terminator'};
+    }
+    return {token: 'STRING', lexeme: text.substring(i, j), pos: i, len: j-i};
+}
+
+function token_copy(tok) {
+    return {token: tok.token, lexeme: tok.lexeme, pos: tok.pos, len: tok.len};
+}
+
+function token_to_string(tok) {
+    return tok.token + '[' + tok.lexeme + ']';
+}
+
+function tokens_to_string(tokens) {
+    var str = '';
+    for (var i = 0; i < tokens.length; i++) {
+        var tok = tokens[i];
+        if (i > 0) str = str + ' ';
+        str = str + token_to_string(tok);
+    }
+    return str;
+}
+
+function text_to_tokens(text, tokens) {
+    var i = 0;
+    var n = text.length;
+    while (i < n) {
+        tok = token_at(text, i);
+        tokens.push(tok);
+        i += tok.len;
+    }
+}
+
+function tokens_strip_spaces(tokens) {
+    var line_no = 1;
+
+    var j = 0;
+    for (var i = 0; i < tokens.length; i++) {
+        var next_line_no = update_line_number(tokens[i].lexeme, line_no);
+        if (tokens[i].token == 'SPACE') {
+	    line_no = next_line_no;
+            continue;
+        }
+        tokens[j] = tokens[i];
+        tokens[j].line_no = line_no;
+        line_no = next_line_no;
+        j++;
+    }
+    tokens.splice(j,i);
+}
+
+function tokens_section(tokens) {
+    for (var i = 0; i < tokens.length; i++) {
+        if (tokens[i].token == 'SECTION') {
+            var init_part = tokens.slice(0, i);
+	    var end_init_part = token_copy(init_part[init_part.length-1]);
+            end_init_part.token = 'RBRACE';
+            init_part.push(end_init_part);
+            var run_part = tokens.slice(i, tokens.length);
+	    run_part[0].token = 'LBRACE';
+            run_part[0].line_no = run_part[1].line_no;
+            return {init: init_part, run: run_part};
+        }
+    }
+    return {run: tokens};
+}
+
+function update_line_number(lexeme, line_no) {
+    for (var i = 0; i < lexeme.length; i++) {
+        var ch = lexeme.charCodeAt(i);
+        if (ch == 10) {
+            line_no++;
+        }
+    }
+    return line_no;
+}
+
+function tokens_to_tree(tokens, tree) {
+    var pos = { ref: 0 };
+    if (tokens.length == 0) {
+        var token = { token: 'EMPTY', lexeme: '', pos: pos.ref, len: 0};
+        tree.ref = { node: 'EMPTY', token: token, children: [] };
+        return true;
+    }
+    return parse_statement(tokens, pos, tree);
+}
+
+function tree_to_string(tree, depth) {
+    if (!depth) {
+        depth = 0;
+    }
+    if (depth > 5) {
+        return '[...]';
+    }
+    if (!tree) {
+        return '?';
+    }
+    if (tree.ref) {
+        tree = tree.ref;
+    }
+    if (tree.node == 'EMPTY') {
+        return '';
+    }
+    if (tree.node == 'ERROR') {
+        str = tree.node + '(\'' + tree.message + '\')';
+        return str;
+    }
+    var str = tree.node;
+    if (str == 'ID' || str == 'NUM' || str == 'STRING') {
+        str = tree.token.lexeme;
+    }
+    if (tree.children && tree.children.length > 0) {
+        str += '(' + tree_list_to_string(tree.children, depth) + ')';
+    }
+    return str;
+}
+
+function tree_list_to_string(treelist,depth) {
+    var str = '';
+    if (!treelist) {
+         return str;
+    }
+    for (var i = 0; i < treelist.length; i++) {
+        if (i > 0) str += ',';
+        str += tree_to_string(treelist[i], depth+1);
+    }
+    return str;
+}
+
+// -------------------------------------------------------------------
+//  Javascript parser
+//  This is a recursive descent implementation of:
+//      https://tomcopeland.blogs.com/EcmaScript.html
+// -------------------------------------------------------------------
+
+function parse_is_eof(tokens, pos) {
+    return pos.ref >= tokens.length;
+}
+
+function parse_lookahead(tokens, pos, type) {
+    if (pos.ref >= tokens.length) {
+        return false;
+    }
+
+    if (Array.isArray(type)) {
+        for (var i = 0; i < type.length; i++) {
+            if (parse_lookahead(tokens, pos, type[i])) {
+                return true;
+            }
+        }
+    }
+
+    var tok = tokens[pos.ref];
+
+    if (tok.token == type) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+function parse_lookahead2(tokens, pos, type) {
+    if (pos.ref+1 >= tokens.length) {
+        return false;
+    }
+    pos.ref++;
+    var r = parse_lookahead(tokens, pos, type);
+    pos.ref--;
+    return r;
+}
+
+function parse_accept(tokens, pos, type, token) {
+    if (parse_lookahead(tokens, pos, type)) {
+        token.ref = tokens[pos.ref];
+        pos.ref++;
+        return true;
+    } else {
+        return false;
+    }
+}
+
+function parse_expect(tokens, pos, type, token) {
+    if (pos.ref >= tokens.length) {
+        return false;
+    }
+    token.ref = tokens[pos.ref];
+    var r = token.ref.token == type;
+    if (r) {
+        pos.ref++;
+    }
+    return r;
+}
+
+// -----------------
+// Parse expressions
+// -----------------
+
+function parse_assignment_expression(tokens, pos, tree) {
+    if (!parse_conditional_expression(tokens, pos, tree)) {
+        return false;
+    }
+    var tok = {};
+    if (parse_assignment_op(tokens, pos, tok)) {
+        var rtree = {};
+        if (!parse_assignment_expression(tokens, pos, rtree)) {
+            return false;
+        }
+        tree.ref = {node: tok.ref.token, token: tok.ref, children: [tree.ref, rtree.ref]};
+    }
+    return true;
+}
+
+function parse_assignment_op(tokens, pos, tok) {
+    if (parse_accept(tokens, pos, ['ASSIGN', 'MULASGN', 'DIVASGN', 'MODASGN', 'PLUSASGN', 'MINUSASGN', 'LSHIFTASGN', 'RSHIFTASGN', 'RRSHIFTASGN', 'ANDASGN', 'XORASGN', 'ORASGN'], tok)) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+function parse_conditional_expression(tokens, pos, tree) {
+    if (parse_logical_or_expression(tokens, pos, tree)) {
+        return true;
+    }
+    return false;
+}
+
+function parse_logical_or_expression(tokens, pos, tree) {
+    return parse_nested_expression(tokens, pos, tree,
+         function(tokens, pos, tree){return parse_logical_and_expression(tokens, pos, tree);},
+         'LOGOR');
+}
+
+function parse_logical_and_expression(tokens, pos, tree) {
+    var r = parse_nested_expression(tokens, pos, tree,
+         function(tokens, pos, tree){return parse_bitwise_or_expression(tokens, pos, tree);},
+         'LOGAND');
+    return r;
+}
+
+function parse_bitwise_or_expression(tokens, pos, tree) {
+    var r = parse_nested_expression(tokens, pos, tree,
+         function(tokens, pos, tree){return parse_bitwise_xor_expression(tokens, pos, tree);},
+         'BITOR');
+    return r;
+}
+
+function parse_bitwise_xor_expression(tokens, pos, tree) {
+    var r = parse_nested_expression(tokens, pos, tree,
+         function(tokens, pos, tree){return parse_bitwise_and_expression(tokens, pos, tree);},
+         'BITXOR');
+    return r;
+}
+
+function parse_bitwise_and_expression(tokens, pos, tree) {
+    var r = parse_nested_expression(tokens, pos, tree,
+         function(tokens, pos, tree){return parse_equality_expression(tokens, pos, tree);},
+         'BITAND');
+    return r;
+}
+
+function parse_equality_expression(tokens, pos, tree) {
+    var r = parse_nested_expression(tokens, pos, tree,
+         function(tokens, pos, tree){return parse_relational_expression(tokens, pos, tree);},
+         ['EQ', 'NEQ', 'EQV', 'NEQV']);
+    return r;
+}
+
+function parse_relational_expression(tokens, pos, tree) {
+    var r = parse_nested_expression(tokens, pos, tree,
+         function(tokens, pos, tree){return parse_shift_expression(tokens, pos, tree);},
+         ['LE', 'LEQ', 'GR', 'GEQ', 'INSTANCEOF']);
+    return r;
+}
+
+function parse_shift_expression(tokens, pos, tree) {
+    var r = parse_nested_expression(tokens, pos, tree,
+         function(tokens, pos, tree){return parse_additive_expression(tokens, pos, tree);},
+         ['LSHIFT', 'RSHIFT', 'RRSHIFT']);
+    return r;
+}
+
+function parse_additive_expression(tokens, pos, tree) {
+    var r = parse_nested_expression(tokens, pos, tree,
+         function(tokens, pos, tree){return parse_multiplicative_expression(tokens, pos, tree);},
+         ['PLUS', 'MINUS']);
+    return r;
+}
+
+function parse_multiplicative_expression(tokens, pos, tree) {
+    var r = parse_nested_expression(tokens, pos, tree,
+         function(tokens, pos, tree){return parse_unary_expression(tokens, pos, tree);},
+         ['MUL', 'DIV', 'MOD']);
+    return r;
+}
+
+function parse_unary_expression(tokens, pos, tree) {
+    var tok = {};
+    if (parse_accept(tokens, pos, ['DELETE', 'VOID', 'TYPEOF', 'INC', 'DEC', 'PLUS', 'MINUS', 'BITNOT', 'LOGNEG'], tok)) {
+        var rtree = {};
+        if (!parse_unary_expression(tokens, pos, rtree)) {
+            return false;
+        }
+        tree.ref = {node: tok.ref.token, token: tok.ref, children: [rtree.ref]};
+        return true;
+    }
+    return parse_postfix_expression(tokens, pos, tree);
+}
+
+function parse_postfix_expression(tokens, pos, tree) {
+    if (!parse_lhs_expression(tokens, pos, tree)) {
+        return false;
+    }
+    if (parse_accept(tokens, pos, 'INC', tok)) {
+        tree.ref = {node:'POSTINC', token: tok.ref, children: [tree.ref]};
+    } else if (parse_accept(tokens, pos, 'DEC', tok)) {
+        tree.ref = {node:'POSTDEC', token: tok.ref, children: [tree.ref]};
+    }
+    return true;
+}
+
+function parse_nested_expression(tokens, pos, tree, f, seps) {
+    if (!f(tokens, pos, tree)) {
+        return false;
+    }
+    var first = true;
+    var tok = {};
+    var last;
+    while (parse_accept(tokens, pos, seps, tok)) {
+        var rtree = {};
+        if (!f(tokens, pos, rtree)) {
+            return false;
+        }
+        if (first) {
+            tree.ref = {node: tok.ref.token, token: tok.ref, children:[tree.ref,rtree.ref]};
+            last = tree.ref;
+            first = false;
+        } else {
+            last.children[1] = {node: tok.ref.token, token: tok.ref, children:[last.children[1],rtree.ref]};
+            last = last.children[1];
+        }
+    }
+    return true;
+}
+
+function parse_lhs_expression(tokens, pos, tree) {
+    if (!parse_member_expression(tokens, pos, tree)) {
+        return false;
+    }
+    // Check if we have a left paren
+    var tok = {};
+    if (parse_accept(tokens, pos, 'LPAREN', tok)) {
+        var args = {};
+        if (!parse_arguments(tokens, pos, args)) {
+            return false;
+        }
+        args.ref.unshift(tree.ref);
+	tree.ref = {node: 'CALL', token: tok.ref, children: args.ref};
+        return parse_member_expression_parts(tokens, pos, tree);
+    }
+    return true;
+}
+
+function parse_member_expression_parts(tokens, pos, tree) {
+    var tok = {};
+    while (parse_accept(tokens, pos, ['LBRACK', 'DOT'], tok)) {
+        if (tok.ref.token == 'DOT') {
+            var tok2 = {};
+            if (!parse_accept(tokens, pos, 'ID', tok2)) {
+                return false;
+            }
+            tree.ref = {node: 'MEMBER', token: tok.ref, children: [tree.ref, {node: 'ID', token: tok2.ref}]};
+        } else if (tok.ref.token == 'LBRACK') {
+            var index = {};
+            if (!parse_expression(tokens, pos, index)) {
+                return false;
+            }
+            tree.ref = {node: 'INDEX', token: tok.ref, children: [tree.ref, index.ref]};
+            if (!parse_expect(tokens, pos, 'RBRACK', tok)) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+function parse_arguments(tokens, pos, tree) {
+    var first = true;
+    tree.ref = [];
+    while (!parse_accept(tokens, pos, 'RPAREN', tok)) {
+        if (!first) {
+            if (!parse_expect(tokens, pos, 'COMMA', tok)) {
+                tree.ref.push({node: 'ERROR', token: tok.ref, message: 'missing comma in argument list'});
+                return false;
+            }
+        }
+        var arg = {};
+        if (parse_assignment_expression(tokens, pos, arg)) {
+            tree.ref.push(arg.ref);
+        }
+        first = false;
+    }
+    return true;
+}
+
+function parse_member_expression(tokens, pos, tree) {
+    if (!parse_primary_expression(tokens, pos, tree)) {
+        return false;
+    }
+    var rtree = {};
+    if (!parse_member_expression_part(tokens, pos, rtree)) {
+        return true;
+    }
+    tree.ref = {node: rtree.ref.node, token: rtree.ref.token, children: [tree.ref, rtree.ref.children]};
+    return true;
+}
+
+function parse_member_expression_part(token, pos, tree) {
+    if (!parse_accept(token, pos, 'DOT', tok)) {
+        return false;
+    }
+    if (!parse_accept(token, pos, 'ID', idtok)) {
+        return false;
+    }
+    tree.ref = { node: 'DOT', token: tok.ref, children: { node: 'ID', token: idtok.ref } };
+    return true;
+}
+
+function parse_primary_expression(tokens, pos, tree) {
+    var tok = {};
+    if (parse_accept(tokens, pos, ['ID', 'THIS', 'NUM', 'STRING', 'BOOL', 'NULL'], tok)) {
+        tree.ref = { node: tok.ref.token, token : tok.ref };
+        return true;
+    }
+    if (!parse_expect(tokens, pos, 'LPAREN', tok)) {
+        return false;
+    }
+    if (!parse_expression(tokens, pos, tree)) {
+        return false;
+    }
+    if (!parse_expect(tokens, pos, 'RPAREN', tok)) {
+        tree.ref = { node: 'ERROR', token: tok.ref, children: tree.ref, message: 'unrecognized primary expression'};
+        return false;
+    }
+    return true;
+}
+
+function parse_expression(tokens, pos, tree) {
+    return parse_nested_expression(tokens, pos, tree,
+        function(tokens, pos, tree){return parse_assignment_expression(tokens,pos,tree);},
+        'COMMA');
+}
+
+// -----------------
+// Parse statements
+// -----------------
+
+function parse_statement(tokens, pos, tree) {
+    if (parse_lookahead(tokens, pos, 'LBRACE')) {
+        return parse_block_statement(tokens, pos, tree);
+    } else if (parse_lookahead(tokens, pos, 'VAR')) {
+        return parse_var_statement(tokens, pos, tree);
+    } else if (parse_lookahead(tokens, pos, 'SEMI')) {
+        return parse_empty_statement(tokens, pos, tree);
+    } else if (parse_lookahead(tokens, pos, 'ID')) {
+        if (parse_lookahead2(tokens, pos, 'COLON')) {
+            return parse_labelled_statement(tokens, pos, tree);
+        } else {
+	    return parse_expression_statement(tokens, pos, tree);
+	}
+    } else if (parse_lookahead(tokens, pos, ['STRING', 'NUM'])) {
+        return parse_expression_statement(tokens, pos, tree);
+    } else if (parse_lookahead(tokens, pos, 'IF', tok)) {
+        return parse_if_statement(tokens, pos, tree);
+    } else if (parse_lookahead(tokens, pos, ['DO', 'WHILE', 'FOR'], tok)) {
+        return parse_iteration_statement(tokens, pos, tree, tok);
+    } else if (parse_lookahead(tokens, pos, 'CONTINUE', tree)) {
+        return parse_continue_statement(tokens, pos, tree);
+    } else if (parse_lookahead(tokens, pos, 'BREAK', tree)) {
+        return parse_break_statement(tokens, pos, tree);
+    } else if (parse_lookahead(tokens, pos, 'RETURN', tree)) {
+        return parse_return_statement(tokens, pos, tree);
+    } else if (parse_lookahead(tokens, pos, 'WITH', tree)) {
+        return parse_with_statement(tokens, pos, tree);
+    } else if (parse_lookahead(tokens, pos, 'SWITCH', tree)) {
+        return parse_switch_statement(tokens, pos, tree);
+    } else if (parse_lookahead(tokens, pos, 'THROW', tree)) {
+        return parse_throw_statement(tokens, pos, tree);
+    } else if (parse_lookahead(tokens, pos, 'TRY', tree)) {
+        return parse_try_statement(tokens, pos, tree);
+    } else {
+        tree.ref = {node: 'ERROR', token: tok.ref, message: 'unrecognized statement'};
+        return false;
+    }
+}
+
+function parse_block_statement(tokens, pos, tree) {
+   var tok = {};
+   if (!parse_expect(tokens, pos, 'LBRACE', tok)) {
+       return false;
+   }
+   tree.ref = {node: 'BLOCK', token: tok.ref, children: []};
+   while (!parse_lookahead(tokens, pos, 'RBRACE') && !parse_is_eof(tokens, pos)) {
+       var stmt = {};
+       var r = parse_statement(tokens, pos, stmt);
+       tree.ref.children.push(stmt.ref);
+       if (!r) {
+           return false;
+       }
+   }
+   if (!parse_expect(tokens, pos, 'RBRACE', tok)) {
+       tree.ref.children.push({node: 'ERROR', token: tok.ref, message: 'missing end ' + "'}'"});
+       return false;
+   }
+   return true;
+}
+
+function parse_iteration_statement(tokens, pos, tree) {
+   var tok = {};
+   if (parse_accept(tokens, pos, 'FOR', tok)) {
+       var tok0 = tok.ref;
+       if (!parse_expect(tokens, pos, 'LPAREN', tok)) {
+            tree.ref = {node: 'ERROR', token: tok0.ref, message: 'missing lparen in for'};
+            return false;
+       }
+       if (parse_lookahead(tokens, pos, 'SEMI', tok) &&
+           parse_lookahead2(tokens, pos, 'SEMI', tok)) {
+           parse_expect(tokens, pos, 'SEMI', tok);
+           parse_expect(tokens, pos, 'SEMI', tok);
+           if (parse_lookahead(tokens, pos, 'RPAREN')) {
+               parse_expect(tokens, pos, 'RPAREN', tok);
+	       if (!parse_statement(tokens, pos, tree)) {
+                   return false;
+               }
+               tree.ref = {node: 'LOOP', token: tok0, children: [tree.ref]};
+	       return true;
+           }
+       }
+       tree.ref = {node: 'ERROR', token: tok0.ref, message: 'incomplete for'};
+   }
+   return false;
+}
+
+function parse_if_statement(tokens, pos, tree) {
+    var tok0 = {};
+    if (!parse_expect(tokens, pos, 'IF', tok0)) {
+        return false;
+    }
+    var tok = {};
+    if (!parse_expect(tokens, pos, 'LPAREN', tok)) {
+        tree.ref = {node: 'ERROR', token: tok0.ref, message: 'missing left parenthesis for if'};
+        return false;
+    }
+    var cond = {};
+    if (!parse_expression(tokens, pos, cond)) {
+        tree.ref = {node: 'ERROR', token: tok.ref, message: 'error in condition of if'};
+        return false;
+    }
+    if (!parse_expect(tokens, pos, 'RPAREN', tok)) {
+        tree.ref = {node: 'ERROR', token: cond.token, message: 'missing end parenthesis for if condition'};
+        return false;
+    }
+    var true_branch = {};
+    if (!parse_statement(tokens, pos, true_branch)) {
+        return false;
+    }
+    tree.ref = {node: 'IF', token: tok0.ref, children: [cond.ref, true_branch.ref]};
+    return true;
+}
+
+function parse_expression_statement(tokens, pos, tree) {
+    if (!parse_expression(tokens, pos, tree)) {
+        tree.ref = {node: 'ERROR', message: 'unrecognized expression statement'};
+        return false;
+    }
+    var tok2 = {};
+    if (!parse_expect(tokens, pos, 'SEMI', tok2)) {
+        tree.ref = {node: 'ERROR', token: tok2.ref, message: 'unrecognized expression statement. Missing semicolon.'};
+        return false;
+    }
+    tree.ref = {node: 'EXPRSTMT', token: tok2.ref, children: [tree.ref]};
+    return true;
+}
+
+// -------------------------------------------------------------------
+//  Javascript emitter
+// -------------------------------------------------------------------
+
+function emit_expression(emitter, tree) {
+    switch (tree.node) {
+        case 'NUM': return tree.token.lexeme;
+        case 'BOOL': return tree.token.lexeme;
+        case 'NULL': return tree.token.lexeme; 
+        case 'STRING': return tree.token.lexeme;
+        case 'ID': return emitter.id(env, tree.token.lexeme);
+        case 'PLUS': case 'MINUS':
+        case 'EQ': case 'NEQ':
+        case 'LE': case 'LEQ':
+        case 'GR': case 'GEQ':
+        case 'LOGOR': case 'LOGAND':
+            if (tree.children.length == 2) {
+		 return '(' + emit_expression(emitter, tree.children[0])
+		            + emit_op(tree.node)
+		            + emit_expression(emitter, tree.children[1]) + ')';
+            } else {
+                 return emit_op(tree.node) + '('
+	                + emit_expression(emitter, tree.children[0])
+	                + ')';
+            }
+        case 'ASSIGN': return emit_expression(emitter, tree.children[0]) 
+	                + '=' + emit_expression(emitter, tree.children[1]);
+        case 'CALL': return emit_call(emitter, tree);
+    }
+}
+
+function emit_call(emitter, tree) {
+    var str = emit_expression(emitter, tree.children[0]) + '(';
+    for (var i = 1; i < tree.children.length; i++) {
+        if (i > 1) str += ",";
+        str += emit_expression(emitter, tree.children[i]);
+    }
+    str += ')';
+    return str;
+}
+
+function emit_op(node) {
+   switch (node) {
+       case 'PLUS': return '+';
+       case 'MINUS': return '-';
+       case 'EQ': return '==';
+       case 'NEQ': return '!=';
+       case 'LE': return '<';
+       case 'GR': return '>';
+       case 'LEQ': return '<=';
+       case 'GEQ': return '>=';
+       case 'LOGOR': return '||';
+       case 'LOGAND': return '&&';
+       default: return '???';
+   }
+}
+
+function emit_statement(emitter, tree) {
+   var str = '';
+   switch (tree.node) {
+       case 'BLOCK': str += ' {'; emitter.depth++;
+	             str += emitter.newline();
+	             str += emit_statement_children(emitter, tree);
+	             str += emitter.newline();
+                     str += '}'; emitter.depth--;
+	             str += emitter.newline();
+	             break;
+       case 'EXPRSTMT': str += emit_expression(emitter, tree.children[0]);
+                        str += ';';
+                        str += emitter.newline();
+                        break;
+       case 'IF': str += 'if (' + emit_expression(emitter, tree.children[0]) + ')';
+                  str += emit_statement(emitter, tree.children[1]);
+                  break;
+   }
+   return str;
+}
+
+function emit_statement_children(emitter, tree) {
+   var str = '';
+   for (var i = 0; i < tree.children.length; i++) {
+       str += emit_statement(emitter, tree.children[i]);
+   }
+   return str;
+}
+
+var env_emitter = {
+    id: function(env, v) { 
+        if (env.funs.hasOwnProperty(v)) {
+            return "env.funs['" + v + "']";
+        } else {
+            return "env.vars['" + v + "']";
+        }
+    },
+    reset: function() {
+        this.depth = 0;
+    },
+    newline: function() {
+        var str = '\n';
+        return str.padEnd(this.depth, ' ');
+    },
+    depth: 0
+};
+
+// -------------------------------------------------------------------
+//  Javascript interpreter
+// -------------------------------------------------------------------
+
+//
+// Updarte vars in display
+//
+
+var last_var_names = {};
+function update_vars_display(env) {
+    var var_names = Object.keys(env.vars);
+    var code_vars_table = document.getElementById('code_vars');
+    if (!deepEqual(last_var_names, var_names)) {
+        code_vars_table.innerHTML = '';
+    }
+    last_var_names = var_names;
+    for (var v in env.vars) {
+        var el = document.getElementById('code_vars_' + v);
+        if (!el) {
+            var tr = document.createElement('tr');
+            tr.setAttribute('class', 'code_vars');
+            var td1 = document.createElement('td');
+            td1.setAttribute('class', 'code_vars');
+            td1.appendChild(document.createTextNode(v + '='));
+            tr.appendChild(td1);
+            el = document.createElement('td');
+	    el.setAttribute('class', 'code_vars');
+            el.setAttribute('id', 'code_vars_' + v);
+	    el.appendChild(document.createTextNode(''));
+            tr.appendChild(el);
+            code_vars_table.appendChild(tr);
+        }
+        el.innerText = env.vars[v];
+    }
+}
+
+//
+// Interpret expressions
+//
+
+function interpret_expression(env, tree) {
+    env_emitter.reset();
+    var str = emit_expression(env_emitter, tree) + ';';
+    if (str.indexOf('???') != -1) {
+        env.result = 'ERROR: ' + str;
+        return;
+    }
+    env.result = eval(str);
+}
+
+//
+// Interpret statements
+//
+
+function interpret_push(env) {
+    env.stack.push({pc: env.pc, pc_index: env.pc_index});
+}
+
+function interpret_pop(env) {
+    if (env.stack.length == 0) {
+        env.pc = env.program_tree;
+        env.pc_index = -1;
+    } else {
+        var el = env.stack.pop();
+        env.pc = el.pc;
+        env.pc_index = el.pc_index;
+    }
+}
+
+function interpret_statement(env) {
+    if (!env.pc) {
+        return;
+    }
+    while (env.pc && env.pc_index >= env.pc.children.length) {
+        if (env.pc.node == 'LOOP') {
+            env.pc_index = 0;
+            return;
+        } else {
+            interpret_pop(env);
+        }
+    }
+    var pc = env.pc;
+    if (!pc) {
+        env.in_init = false;
+        env.pc = env.program_tree;
+        env.pc_index = -1;
+        pc = env.pc;
+    }
+    if (env.pc_index != -1) {
+        pc = env.pc.children[env.pc_index];
+    }
+    env.pc_index++;
+    current_line = pc.token.line_no;
+    switch (pc.node) {
+        case 'EMPTY': break;
+        case 'EXPRSTMT': interpret_expression(env, pc.children[0]); break;
+        case 'BLOCK': interpret_push(env); env.pc = pc; env.pc_index = 0; break;
+        case 'LOOP': env.pc = pc; env.pc_index = 0; interpret_statement(env); break;
+        case 'IF': interpret_expression(env, pc.children[0]);
+                   if (env.result) {
+                       var true_branch = pc.children[1];
+                       interpret_push(env);
+                       env.pc = true_branch;
+                       env.pc_index = 0;
+                   }
+                   break;
+    }
+}
+
+var canvas_ctx;
+function canvas() {
+    if (!canvas_ctx) {
+        canvas_ctx = document.getElementById('canvas').getContext('2d');
+    }
+    return canvas_ctx;
+}
+
+var env = {vars: {},
+           funs: {
+	      fillRect: function(x0,y0,x1,y1,col) {
+		   canvas().fillStyle = col;
+		   canvas().fillRect(x0,y0,x1,y1);
+	      },
+              line: function(x0,y0,x1,y1,col) {
+                   canvas().beginPath();
+                   canvas().strokeStyle = col;
+                   canvas().moveTo(x0,y0);
+	           canvas().lineTo(x1,y1);
+                   canvas().stroke();
+              },
+              print: function(msg) {
+                  console.log(msg);
+              }
+           }
+          };
+
+function speed_to_ms(speed) {
+    if (speed == 0) {
+        return 1000;
+    }
+    if (speed == 100) {
+        return 1;
+    }
+    return Math.floor(1000 / speed);
+}
+
+var speed_slider = null;
+var speed = 0;
+
+function adjust_speed() {
+    if (!speed_slider) {
+        speed_slider = document.getElementById('speed');
+    }
+    if (speed != speed_slider.value) {
+        speed = speed_slider.value;
+        var dt = speed_to_ms(speed);
+        clearInterval(timer)
+        timer = setInterval(run, dt);
+    }
+}
+
+function reset() {
+    env.stack = [];
+    if (env.init_tree) {
+        env.pc = env.init_tree;
+        env.pc_index = 0;
+        env.in_init = true;
+    } else {
+        env.pc = env.program_tree;
+        env.pc_index = -1;
+    }
+}
+
+function run() {
+    adjust_speed();
+    if (speed == 0) {
+        return;
+    }
+
+    if (speed < 100 && current_line != prev_line) {
+        var current_label_el = document.getElementById('linelabel' + current_line);
+        var prev_label_el = document.getElementById('linelabel' + prev_line);
+        if (prev_label_el) {
+            prev_label_el.style.backgroundColor = 'transparent';
+        }
+        if (current_label_el) {
+            current_label_el.style.backgroundColor = 'red';
+        }
+        prev_line = current_line;
+    } else if (speed == 100 && prev_line != 0) {
+        var prev_label_el = document.getElementById('linelabel' + prev_line);
+        if (prev_label_el) {
+            prev_label_el.style.backgroundColor = 'transparent';
+        }
+        prev_line = 0;        
+    }
+
+    if (has_changed) {
+         has_changed = false;
+
+         var tokens = [];
+         var init_tree = {};
+         var program_tree = {};
+         var text = get_text();
+         text_to_tokens(text, tokens);
+         tokens_strip_spaces(tokens);
+         var parts = tokens_section(tokens);
+         if (parts.init) {
+             if (!tokens_to_tree(parts.init, init_tree)) {
+	         // TODO: Print error message
+                 return;
+             }
+             env.init_tree = init_tree.ref;
+             env_emitter.reset();
+             env.cached_init_script = emit_statement(env_emitter, env.init_tree);
+
+         }
+         if (!tokens_to_tree(parts.run, program_tree)) {
+	     // TODO: Print error message
+             return;
+         }
+         env.program_tree = program_tree.ref;
+         env.stack = [];
+         env.pc = env.program_tree;
+         env.pc_index = -1;
+         current_line = 0;
+         var non_loop = env.pc;
+         if (non_loop.node == 'LOOP') {
+             non_loop = non_loop.children[0];
+         }
+         env_emitter.reset();
+         env.cached_program_script = emit_statement(env_emitter, non_loop);
+    }
+
+    if (speed == 100) {
+        if (env.in_init) {
+            eval(env.cached_init_script);
+            env.in_init = false;
+        }
+        eval(env.cached_program_script);
+    } else {
+        interpret_statement(env);
+    }
+
+    if (speed < 100) update_vars_display(env);
+}
+
+function parse_line_no(id) {
+    return parseInt(id.substring(4));
+}
+
+function find_last_line_no() {
+    for (var i = 1; i < 1000; i++) {
+        if (!document.getElementById('line' + i)) {
+	    return i - 1;
+        }
+    }
+}
+
+function new_line(line_no, at) {
+    var tr = document.createElement('tr');
+    tr.setAttribute('class', 'code');
+    tr.setAttribute('id', 'linewhole' + line_no);
+    var td1 = document.createElement('td');
+    td1.setAttribute('id', 'linelabel' + line_no);
+    td1.setAttribute('class', 'code');
+    td1.appendChild(document.createTextNode(line_no));
+    var td2 = document.createElement('td');
+    td2.setAttribute('class', 'code');
+    var l = document.createElement('input');
+    l.setAttribute('class', 'code');
+    l.setAttribute('id', 'line' + line_no);
+    l.setAttribute('size', 40);
+    l.setAttribute('type', 'text');
+    l.setAttribute('onkeyup', 'code_change_keyup()');
+    l.setAttribute('onkeydown', 'code_change_keydown()');
+    l.setAttribute('onkeypress', 'code_change_keydown()');
+    l.setAttribute('spellcheck', 'false');
+    td2.appendChild(l);
+    tr.appendChild(td1);
+    tr.appendChild(td2);
+    var codearea = document.getElementById('codearea');
+    if (at) {
+        codearea.insertBefore(tr, at);
+    } else {
+        codearea.appendChild(tr);
+    }
+    return l;
+}
+
+function insert_line(line_no) {
+    var i = find_last_line_no();
+    var at = document.getElementById('linewhole'+(line_no+1));
+    for (; i > line_no; i--) {
+        var lineEl = document.getElementById('line'+i);
+        lineEl.setAttribute('id', 'line'+(i+1));
+        var lineLabelEl = document.getElementById('linelabel'+i);
+        lineLabelEl.innerText = (i+1);
+        lineLabelEl.setAttribute('id', 'linelabel'+(i+1));
+        var lineWholeEl = document.getElementById('linewhole'+i);
+        lineWholeEl.setAttribute('id', 'linewhole'+(i+1));
+    }
+    new_line(line_no+1, at);
+}
+
+function code_change_keydown() {
+    var keycode = event.keyCode;
+    if (keycode == 40 || keycode == 38 || keycode == 13) {
+        if (event.shiftKey) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+    }
+}
+
+function code_change_keyup() {
+  var source = event.target || event.srcElement;
+  var keycode = event.keyCode;
+  var line_no = parse_line_no(source.id);
+
+  has_changed = true;
+
+  if (keycode == 40 || keycode == 38) {
+      if (event.shiftKey) {
+          return;
+      }
+
+      var go_line = (keycode == 40) ? line_no + 1 : line_no - 1;
+      if (go_line < 1) go_line = 1;
+      var next_source = document.getElementById('line' + go_line);
+      if (!next_source) {
+           // Add new line
+           next_source = new_line(go_line);
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      next_source.focus();
+  }
+
+  if (keycode == 13) {
+      var go_line = line_no + 1;
+      insert_line(line_no);
+      event.preventDefault();
+      event.stopPropagation();
+      var next_source = document.getElementById('line' + go_line);
+      if (next_source) {
+          next_source.value = source.value.substring(source.selectionStart);
+          source.value = source.value.substring(0, source.selectionStart);
+          next_source.focus();
+          next_source.setSelectionRange(0,0);
+         
+      }
+  }
+}
+</script>
+
+</body>
+</html>
