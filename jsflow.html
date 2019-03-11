@@ -214,11 +214,11 @@ var operator_table = [
     { seq:[61,61], op:'EQ' },
     { seq:[61], op:'ASSIGN' },
     { seq:[62,62,62,61], op:'RRSHIFTASGN' },
+    { seq:[62,62,62], op:'RRSHIFT' },
     { seq:[62,62,61], op:'RSHIFTASGN' },
-    { seq:[62,62], op:'RRSHIFT' },
     { seq:[62,62], op:'RSHIFT' },
-    { seq:[62], op:'GR' },
     { seq:[62,61], op:'GEQ' },
+    { seq:[62], op:'GR' },
     { seq:[91], op:'LBRACK' },
     { seq:[93], op:'RBRACK' },
     { seq:[94,61], op:'XORASGN' },
@@ -697,11 +697,22 @@ function parse_member_expression(tokens, pos, tree) {
     if (!parse_member_expression_part(tokens, pos, rtree)) {
         return true;
     }
-    tree.ref = {node: rtree.ref.node, token: rtree.ref.token, children: [tree.ref, rtree.ref.children]};
+    tree.ref = {node: rtree.ref.node, token: rtree.ref.token, children: [tree.ref]};
+    tree.ref.children.push(rtree.ref.children[0]);
     return true;
 }
 
 function parse_member_expression_part(token, pos, tree) {
+    if (parse_accept(token, pos, 'LBRACK', tok)) {
+        var index = {};
+        if (parse_expression(token, pos, index)) {
+            tree.ref = { node: 'INDEX', token: tok.ref, children: [index.ref]};
+            if (!parse_expect(token, pos, 'RBRACK', tok)) {
+	         return false;
+            }
+            return true;
+        }
+    }
     if (!parse_accept(token, pos, 'DOT', tok)) {
         return false;
     }
@@ -718,6 +729,9 @@ function parse_primary_expression(tokens, pos, tree) {
         tree.ref = { node: tok.ref.token, token : tok.ref };
         return true;
     }
+    if (parse_lookahead(tokens, pos, 'LBRACK')) {
+        return parse_array_literal(tokens, pos, tree);
+    }
     if (!parse_expect(tokens, pos, 'LPAREN', tok)) {
         return false;
     }
@@ -728,6 +742,33 @@ function parse_primary_expression(tokens, pos, tree) {
         tree.ref = { node: 'ERROR', token: tok.ref, children: tree.ref, message: 'unrecognized primary expression'};
         return false;
     }
+    return true;
+}
+
+function parse_array_literal(tokens, pos, tree) {
+    if (!parse_expect(tokens, pos, 'LBRACK', tok)) {
+         return false;
+    }
+    var tok0 = tok.ref;
+    var first = true;
+    var arr = [];
+    while (!parse_accept(tokens, pos, 'RBRACK', tok)) {
+         if (!first) {
+	     if (!parse_expect(tokens, pos, 'COMMA', tok)) {
+	         return false;
+	     }
+         }
+         while (parse_accept(tokens, pos, 'COMMA', tok)) {
+             arr.push( {node: 'EMPTY'} );
+         }
+         var elem = {};
+         if (!parse_assignment_expression(tokens, pos, elem)) {
+             return false;
+         }
+         arr.push(elem.ref);
+         first = false;
+    }
+    tree.ref = { node: 'ARRAY', token: tok0, children: arr };
     return true;
 }
 
@@ -806,9 +847,10 @@ function parse_iteration_statement(tokens, pos, tree) {
    if (parse_accept(tokens, pos, 'FOR', tok)) {
        var tok0 = tok.ref;
        if (!parse_expect(tokens, pos, 'LPAREN', tok)) {
-            tree.ref = {node: 'ERROR', token: tok0.ref, message: 'missing lparen in for'};
+            tree.ref = {node: 'ERROR', token: tok0, message: 'missing lparen in for'};
             return false;
        }
+
        if (parse_lookahead(tokens, pos, 'SEMI', tok) &&
            parse_lookahead2(tokens, pos, 'SEMI', tok)) {
            parse_expect(tokens, pos, 'SEMI', tok);
@@ -822,7 +864,48 @@ function parse_iteration_statement(tokens, pos, tree) {
 	       return true;
            }
        }
-       tree.ref = {node: 'ERROR', token: tok0.ref, message: 'incomplete for'};
+
+       // Get init
+       var for_init = {};
+       var for_cond = {};
+       var for_post = {};
+       if (!parse_expression(tokens, pos, for_init)) {
+            tree.ref = {node: 'ERROR', token: tok0, message: 'missing init statement'};
+            return false;
+       }
+       if (!parse_expect(tokens, pos, 'SEMI', tok)) {
+            tree.ref = {node: 'ERROR', token: tok.ref, message: 'missing semi-colon for init statement'};
+            return false;
+       }
+       if (!parse_expression(tokens, pos, for_cond)) {
+            tree.ref = {node: 'ERROR', token: tok.ref, message: 'while parsing for-condition'};
+            return false;
+       }
+       if (!parse_expect(tokens, pos, 'SEMI', tok)) {
+            tree.ref = {node: 'ERROR', token: tok.ref, message: 'missing semi-colon for for-condition'};
+            return false;
+       }
+       if (!parse_expression(tokens, pos, for_post)) {
+            tree.ref = {node: 'ERROR', token: tok.ref, message: 'while parsing post-statement'};
+            return false;          
+       }
+       if (!parse_expect(tokens, pos, 'RPAREN', tok)) {
+            tree.ref = {node: 'ERROR', token: tok.ref, message: 'missing rparen in for'};
+            return false;
+       }
+
+       var for_body = {};
+       if (!parse_statement(tokens, pos, for_body)) {
+            return false;
+       }
+
+       if (for_post.ref.node != 'EMPTY') {
+	   for_post.ref = {node: 'EXPRSTMT', token: for_post.ref.token, children: [for_post.ref]};
+           for_body.ref.children.push(for_post.ref);
+       }
+
+       tree.ref = {node: 'FOR', token: tok0, children: [for_init.ref, for_cond.ref, for_body.ref] };
+       return true;
    }
    return false;
 }
@@ -879,11 +962,27 @@ function emit_expression(emitter, tree) {
         case 'NULL': return tree.token.lexeme; 
         case 'STRING': return tree.token.lexeme;
         case 'ID': return emitter.id(env, tree.token.lexeme);
-        case 'PLUS': case 'MINUS':
-        case 'EQ': case 'NEQ':
-        case 'LE': case 'LEQ':
-        case 'GR': case 'GEQ':
-        case 'LOGOR': case 'LOGAND':
+
+        case 'INDEX': return emit_expression(emitter, tree.children[0]) + '[' + emit_expression(emitter, tree.children[1]) + ']';
+
+	case 'ARRAY': return '[' + emit_list(emitter, tree) + ']';
+
+        case 'POSTINC':
+        case 'POSTDEC':
+             return '(' + emit_expression(emitter, tree.children[0])
+	                + emit_op(tree.node) + ')';
+
+        case 'NEQV': case 'NEQ': case 'LOGNEG': case 'MODASGN':
+        case 'MOD': case 'LOGAND': case 'ANDASGN': case 'BITAND':
+	case 'MULASGN': case 'MUL': case 'INC': case 'PLUSASGN':
+        case 'PLUS': case 'COMMA': case 'DEC': case 'MINUSASGN':
+        case 'MINUS': case 'DOT': case 'DIVASGN': case 'DIV':
+        case 'LSHIFTASGN': case 'LSHIFT': case 'LEQ':
+        case 'LE': case 'EQV': case 'EQ': case 'ASSIGN':
+        case 'RRSHIFTASGN': case 'RRSHIFT': case 'RSHIFTASGN':
+        case 'RSHIFT': case 'GEQ': case 'GR': case 'XORASGN':
+        case 'BITXOR': case 'LOGOR': case 'ORASGN': case 'BITOR':
+        case 'BITNOT':
             if (tree.children.length == 2) {
 		 return '(' + emit_expression(emitter, tree.children[0])
 		            + emit_op(tree.node)
@@ -893,10 +992,17 @@ function emit_expression(emitter, tree) {
 	                + emit_expression(emitter, tree.children[0])
 	                + ')';
             }
-        case 'ASSIGN': return emit_expression(emitter, tree.children[0]) 
-	                + '=' + emit_expression(emitter, tree.children[1]);
         case 'CALL': return emit_call(emitter, tree);
     }
+}
+
+function emit_list(emitter, tree) {
+    var str = '';
+    for (var i = 0; i < tree.children.length; i++) {
+        if (i > 0) str += ',';
+        str += emit_expression(emitter, tree.children[i]);
+    }
+    return str;
 }
 
 function emit_call(emitter, tree) {
@@ -911,16 +1017,45 @@ function emit_call(emitter, tree) {
 
 function emit_op(node) {
    switch (node) {
-       case 'PLUS': return '+';
-       case 'MINUS': return '-';
-       case 'EQ': return '==';
+       case 'NEQV': return '!==';
        case 'NEQ': return '!=';
-       case 'LE': return '<';
-       case 'GR': return '>';
-       case 'LEQ': return '<=';
-       case 'GEQ': return '>=';
-       case 'LOGOR': return '||';
+       case 'LOGNEG': return '!';
+       case 'MODASGN': return '%=';
+       case 'MOD': return '%';
        case 'LOGAND': return '&&';
+       case 'ANDASGN': return '&=';
+       case 'BITAND': return '&';
+       case 'MULASGN': return '*=';
+       case 'MUL': return '*';
+       case 'INC': case 'POSTINC': return '++';
+       case 'PLUSASGN': return '+=';
+       case 'PLUS': return '+';
+       case 'COMMA': return ',';
+       case 'DEC': case 'POSTDEC': return '--';
+       case 'MINUSASGN': return '-=';
+       case 'MINUS': return '-';
+       case 'DOT': return '.';
+       case 'DIVASGN': return '/=';
+       case 'DIV': return '/';
+       case 'LSHIFTASGN': return '<<=';
+       case 'LSHIFT': return '<<';
+       case 'LEQ': return '<=';
+       case 'LE': return '<';
+       case 'EQV': return '===';
+       case 'EQ': return '==';
+       case 'ASSIGN': return '=';
+       case 'RRSHIFTASGN': return '>>>=';
+       case 'RRSHIFT': return '>>>';
+       case 'RSHIFTASGN': return '>>=';
+       case 'RSHIFT': return '>>';
+       case 'GEQ': return '>=';
+       case 'GR': return '>';
+       case 'XORASGN': return '^=';
+       case 'BITXOR': return '^';
+       case 'LOGOR': return '||';
+       case 'ORASGN': return '|=';
+       case 'BITOR': return '|';
+       case 'BITNOT': return '~';
        default: return '???';
    }
 }
@@ -1019,6 +1154,7 @@ function interpret_expression(env, tree) {
         env.result = 'ERROR: ' + str;
         return;
     }
+    // console.log('expr: ' + str);
     env.result = eval(str);
 }
 
@@ -1031,26 +1167,26 @@ function interpret_push(env) {
 }
 
 function interpret_pop(env) {
-    if (env.stack.length == 0) {
-        env.pc = env.program_tree;
-        env.pc_index = -1;
-    } else {
-        var el = env.stack.pop();
-        env.pc = el.pc;
-        env.pc_index = el.pc_index;
-    }
+    var el = env.stack.pop();
+    env.pc = el.pc;
+    env.pc_index = el.pc_index;
 }
 
 function interpret_statement(env) {
     if (!env.pc) {
         return;
     }
-    while (env.pc && env.pc_index >= env.pc.children.length) {
+    while (env.pc && (env.pc_index == -2 || env.pc_index >= env.pc.children.length)) {
         if (env.pc.node == 'LOOP') {
-            env.pc_index = 0;
+            env.pc_index = -1;
             return;
         } else {
-            interpret_pop(env);
+            if (env.stack.length == 0) {
+	       env.pc_index = -1;
+	       env.pc = env.program_tree;
+            } else {
+               interpret_pop(env);
+	    }
         }
     }
     var pc = env.pc;
@@ -1060,24 +1196,53 @@ function interpret_statement(env) {
         env.pc_index = -1;
         pc = env.pc;
     }
-    if (env.pc_index != -1) {
+    if (env.pc_index == -1) {
+        pc = env.pc;
+        env.pc_index = -2;
+    } else {
         pc = env.pc.children[env.pc_index];
+        env.pc_index++;
     }
-    env.pc_index++;
-    current_line = pc.token.line_no;
+
+    // env_emitter.reset();
+    // console.log('hello: ' + current_line + ': ' + emit_statement(env_emitter, pc));
+
     switch (pc.node) {
         case 'EMPTY': break;
-        case 'EXPRSTMT': interpret_expression(env, pc.children[0]); break;
+        case 'EXPRSTMT': current_line = pc.token.line_no; interpret_expression(env, pc.children[0]); break;
         case 'BLOCK': interpret_push(env); env.pc = pc; env.pc_index = 0; break;
         case 'LOOP': env.pc = pc; env.pc_index = 0; interpret_statement(env); break;
-        case 'IF': interpret_expression(env, pc.children[0]);
+        case 'IF': current_line = pc.token.line_no; interpret_expression(env, pc.children[0]);
                    if (env.result) {
                        var true_branch = pc.children[1];
                        interpret_push(env);
                        env.pc = true_branch;
-                       env.pc_index = 0;
+                       env.pc_index = -1;
                    }
                    break;
+        case 'FOR': 
+	            current_line = pc.token.line_no;
+	            interpret_expression(env, pc.children[0]);
+	            interpret_push(env);
+	            var for_cond = pc.children[1];
+                    var for_body = pc.children[2];
+	            env.pc = {node: 'FORLOOP', token: pc.token, children: [for_cond, for_body]};
+	            env.pc_index = -1;
+	            break;
+        case 'FORLOOP':
+	            var for_cond = pc.children[0];
+	            current_line = pc.token.line_no;
+	            interpret_expression(env, for_cond);
+	            if (env.result) {
+	                var for_body = pc.children[1];
+	                env.pc_index = -1;
+	                interpret_push(env);
+	                env.pc = for_body;
+	                env.pc_index = -1;
+	            } else {
+	                env.pc_index = 2;
+	            }
+	            break;
     }
 }
 
@@ -1151,24 +1316,6 @@ function run() {
         return;
     }
 
-    if (speed < 100 && current_line != prev_line) {
-        var current_label_el = document.getElementById('linelabel' + current_line);
-        var prev_label_el = document.getElementById('linelabel' + prev_line);
-        if (prev_label_el) {
-            prev_label_el.style.backgroundColor = 'transparent';
-        }
-        if (current_label_el) {
-            current_label_el.style.backgroundColor = 'red';
-        }
-        prev_line = current_line;
-    } else if (speed == 100 && prev_line != 0) {
-        var prev_label_el = document.getElementById('linelabel' + prev_line);
-        if (prev_label_el) {
-            prev_label_el.style.backgroundColor = 'transparent';
-        }
-        prev_line = 0;        
-    }
-
     if (has_changed) {
          has_changed = false;
 
@@ -1178,6 +1325,7 @@ function run() {
          var text = get_text();
          text_to_tokens(text, tokens);
          tokens_strip_spaces(tokens);
+
          var parts = tokens_section(tokens);
          if (parts.init) {
              if (!tokens_to_tree(parts.init, init_tree)) {
@@ -1217,6 +1365,24 @@ function run() {
     }
 
     if (speed < 100) update_vars_display(env);
+
+    if (speed < 100 && current_line != prev_line) {
+        var current_label_el = document.getElementById('linelabel' + current_line);
+        var prev_label_el = document.getElementById('linelabel' + prev_line);
+        if (prev_label_el) {
+            prev_label_el.style.backgroundColor = 'transparent';
+        }
+        if (current_label_el) {
+            current_label_el.style.backgroundColor = 'red';
+        }
+        prev_line = current_line;
+    } else if (speed == 100 && prev_line != 0) {
+        var prev_label_el = document.getElementById('linelabel' + prev_line);
+        if (prev_label_el) {
+            prev_label_el.style.backgroundColor = 'transparent';
+        }
+        prev_line = 0;        
+    }
 }
 
 function parse_line_no(id) {
