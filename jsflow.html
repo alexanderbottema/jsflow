@@ -4,11 +4,14 @@
 <tr.code { margin: 0; padding: 0; border: 0; }
 td.code { margin: 0; padding: 0; border: 0; }
 table.code { border-collapse: collapse; border-spacing: 0; }
-table.code_vars {  }
+table.code_vars { border-collapse: collapse; table-layout: fixed; width:100%;}
 input.code { margin: 0; padding: 0; border: 1; width: 400px; font-family: monospace; outline: none; spellcheck: 0; }
-tr.code_vars { vertical-align: top; }
-td.code_vars { vertical-align: top; }
+tr.code_vars { vertical-align: top; text-align:left; }
+td.code_vars_1 { vertical-align: top; text-align:left; width: 20px; }
+td.code_vars_2 { vertical-align: top; text-align:left; width: 150px; overflow-wrap: break-word; }
+td.dropzone { height: 30px; width: 400px; background: orange; }
 input.speed { width: 300px; }
+img.hidden { display: none; }
 </style>
 </head>
 <body onload="start()">
@@ -40,8 +43,10 @@ input.speed { width: 300px; }
   </table>
 </td>
 </tr>
+<tr><td id='filelist' class='dropzone' ondrop='dropped(event)' ondragover='allowDrop(event)'></td></tr>
 </table>
-
+<div id='dropzone' style='hidden'>
+</div>
 
 
 <script>
@@ -83,6 +88,11 @@ function deepEqual(a, b) {
     } else {
         return false;
     }
+}
+
+function allowDrop(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
 }
 
 // -------------------------------------------------------------------
@@ -390,7 +400,7 @@ function tree_to_string(tree, depth) {
         return str;
     }
     var str = tree.node;
-    if (str == 'ID' || str == 'NUM' || str == 'STRING') {
+    if (str == 'ID' || str == 'MID' || str == 'NUM' || str == 'STRING') {
         str = tree.token.lexeme;
     }
     if (tree.children && tree.children.length > 0) {
@@ -640,20 +650,20 @@ function parse_lhs_expression(tokens, pos, tree) {
         }
         args.ref.unshift(tree.ref);
 	tree.ref = {node: 'CALL', token: tok.ref, children: args.ref};
-        return parse_member_expression_parts(tokens, pos, tree);
+        return parse_call_expression_parts(tokens, pos, tree);
     }
     return true;
 }
 
-function parse_member_expression_parts(tokens, pos, tree) {
+function parse_call_expression_parts(tokens, pos, tree) {
     var tok = {};
-    while (parse_accept(tokens, pos, ['LBRACK', 'DOT'], tok)) {
+    while (parse_accept(tokens, pos, ['LPAREN', 'LBRACK', 'DOT'], tok)) {
         if (tok.ref.token == 'DOT') {
             var tok2 = {};
             if (!parse_accept(tokens, pos, 'ID', tok2)) {
                 return false;
             }
-            tree.ref = {node: 'MEMBER', token: tok.ref, children: [tree.ref, {node: 'ID', token: tok2.ref}]};
+            tree.ref = {node: 'MEMBER', token: tok.ref, children: [tree.ref, {node: 'MID', token: tok2.ref}]};
         } else if (tok.ref.token == 'LBRACK') {
             var index = {};
             if (!parse_expression(tokens, pos, index)) {
@@ -663,6 +673,13 @@ function parse_member_expression_parts(tokens, pos, tree) {
             if (!parse_expect(tokens, pos, 'RBRACK', tok)) {
                 return false;
             }
+        } else if (tok.ref.token = 'LPAREN') {
+            var args = {};
+	    if (!parse_arguments(tokens, pos, args)) {
+                return false;
+            }
+	    args.ref.unshift(tree.ref);
+            tree.ref = {node: 'CALL', token: tok.ref, children: args.ref};
         } else {
             return false;
         }
@@ -693,33 +710,31 @@ function parse_member_expression(tokens, pos, tree) {
     if (!parse_primary_expression(tokens, pos, tree)) {
         return false;
     }
-    var rtree = {};
-    if (!parse_member_expression_part(tokens, pos, rtree)) {
+    if (!parse_member_expression_parts(tokens, pos, tree)) {
         return true;
     }
-    tree.ref = {node: rtree.ref.node, token: rtree.ref.token, children: [tree.ref]};
-    tree.ref.children.push(rtree.ref.children[0]);
     return true;
 }
 
-function parse_member_expression_part(token, pos, tree) {
-    if (parse_accept(token, pos, 'LBRACK', tok)) {
-        var index = {};
-        if (parse_expression(token, pos, index)) {
-            tree.ref = { node: 'INDEX', token: tok.ref, children: [index.ref]};
-            if (!parse_expect(token, pos, 'RBRACK', tok)) {
-	         return false;
+function parse_member_expression_parts(tokens, pos, tree) {
+    while (parse_lookahead(tokens, pos, ['LBRACK', 'DOT'])) {
+        if (parse_accept(tokens, pos, 'LBRACK', tok)) {
+            var index = {};
+            if (parse_expression(token, pos, index)) {
+                tree.ref = { node: 'INDEX', token: tok.ref, children: [tree.ref, index.ref]};
+                if (!parse_expect(token, pos, 'RBRACK', tok)) {
+	             return false;
+                }
             }
-            return true;
+        }
+        if (parse_accept(tokens, pos, 'DOT', tok)) {
+            var idtok = {};
+            if (!parse_accept(tokens, pos, 'ID', idtok)) {
+                return false;
+            }
+            tree.ref = { node: 'MEMBER', token: tok.ref, children: [tree.ref, {node: 'MID', token: idtok.ref }] };
         }
     }
-    if (!parse_accept(token, pos, 'DOT', tok)) {
-        return false;
-    }
-    if (!parse_accept(token, pos, 'ID', idtok)) {
-        return false;
-    }
-    tree.ref = { node: 'DOT', token: tok.ref, children: { node: 'ID', token: idtok.ref } };
     return true;
 }
 
@@ -731,6 +746,9 @@ function parse_primary_expression(tokens, pos, tree) {
     }
     if (parse_lookahead(tokens, pos, 'LBRACK')) {
         return parse_array_literal(tokens, pos, tree);
+    }
+    if (parse_lookahead(tokens, pos, 'LBRACE')) {
+        return parse_object_literal(tokens, pos, tree);
     }
     if (!parse_expect(tokens, pos, 'LPAREN', tok)) {
         return false;
@@ -769,6 +787,40 @@ function parse_array_literal(tokens, pos, tree) {
          first = false;
     }
     tree.ref = { node: 'ARRAY', token: tok0, children: arr };
+    return true;
+}
+
+function parse_object_literal(tokens, pos, tree) {
+    if (!parse_expect(tokens, pos, 'LBRACE', tok)) {
+         return false;
+    }
+    var tok0 = tok.ref;
+    var first = true;
+    var props = [];
+    while (!parse_accept(tokens, pos, 'RBRACE', tok)) {
+         if (!first) {
+	     if (!parse_expect(tokens, pos, 'COMMA', tok)) {
+	         return false;
+	     }
+         }
+         var elem = {};
+         var nametok = {};
+         if (!parse_accept(tokens, pos, ['ID', 'STRING', 'NUM'], nametok)) {
+	     return false;
+         }
+	 var mid = {node: 'MID', token: nametok.ref};
+         if (!parse_expect(tokens, pos, 'COLON', tok)) {
+             return false;
+         }
+	 var val = {};
+         if (!parse_assignment_expression(tokens, pos, val)) {
+             return false;
+         }
+	 var pair = {node: 'PAIR', token: nametok.ref, children: [mid, val.ref]};
+         props.push(pair);
+         first = false;
+    }
+    tree.ref = { node: 'OBJECT', token: tok0, children: props };
     return true;
 }
 
@@ -899,10 +951,11 @@ function parse_iteration_statement(tokens, pos, tree) {
             return false;
        }
 
-       if (for_post.ref.node != 'EMPTY') {
-	   for_post.ref = {node: 'EXPRSTMT', token: for_post.ref.token, children: [for_post.ref]};
-           for_body.ref.children.push(for_post.ref);
+       if (for_body.ref.node != 'BLOCK') {
+           for_body.ref = {node: 'BLOCK', token: for_body.ref.token, children: [for_body.ref]};
        }
+
+       for_body.ref.children.push({node: 'EXPRSTMT', token: for_post.ref.token, children: [for_post.ref]});
 
        tree.ref = {node: 'FOR', token: tok0, children: [for_init.ref, for_cond.ref, for_body.ref] };
        return true;
@@ -962,10 +1015,15 @@ function emit_expression(emitter, tree) {
         case 'NULL': return tree.token.lexeme; 
         case 'STRING': return tree.token.lexeme;
         case 'ID': return emitter.id(env, tree.token.lexeme);
+        case 'MID': return emitter.mid(env, tree.token.lexeme);
 
         case 'INDEX': return emit_expression(emitter, tree.children[0]) + '[' + emit_expression(emitter, tree.children[1]) + ']';
+        case 'MEMBER': return '(' + emit_expression(emitter, tree.children[0]) 
+	                    + '.' + emit_expression(emitter, tree.children[1])
+	                    + ')';
 
 	case 'ARRAY': return '[' + emit_list(emitter, tree) + ']';
+        case 'OBJECT': return '{' + emit_props(emitter, tree) + '}';
 
         case 'POSTINC':
         case 'POSTDEC':
@@ -1001,6 +1059,17 @@ function emit_list(emitter, tree) {
     for (var i = 0; i < tree.children.length; i++) {
         if (i > 0) str += ',';
         str += emit_expression(emitter, tree.children[i]);
+    }
+    return str;
+}
+
+function emit_props(emitter, tree) {
+    var str = '';
+    for (var i = 0; i < tree.children.length; i++) {
+        if (i > 0) str += ',';
+        var pair = tree.children[i];
+        str += emit_expression(emitter, pair.children[0]) + ': '
+	     + emit_expression(emitter, pair.children[1]);
     }
     return str;
 }
@@ -1077,6 +1146,11 @@ function emit_statement(emitter, tree) {
        case 'IF': str += 'if (' + emit_expression(emitter, tree.children[0]) + ')';
                   str += emit_statement(emitter, tree.children[1]);
                   break;
+       case 'FOR': str += 'for ('
+	                  + emit_expression(emitter, tree.children[0]) + ';' 
+	                  + emit_expression(emitter, tree.children[1]) + ';) '
+			  + emit_statement(emitter, tree.children[2]);
+	          break;
    }
    return str;
 }
@@ -1096,6 +1170,9 @@ var env_emitter = {
         } else {
             return "env.vars['" + v + "']";
         }
+    },
+    mid: function(env, v) {
+        return v;
     },
     reset: function() {
         this.depth = 0;
@@ -1129,11 +1206,11 @@ function update_vars_display(env) {
             var tr = document.createElement('tr');
             tr.setAttribute('class', 'code_vars');
             var td1 = document.createElement('td');
-            td1.setAttribute('class', 'code_vars');
+            td1.setAttribute('class', 'code_vars_1');
             td1.appendChild(document.createTextNode(v + '='));
             tr.appendChild(td1);
             el = document.createElement('td');
-	    el.setAttribute('class', 'code_vars');
+	    el.setAttribute('class', 'code_vars_2');
             el.setAttribute('id', 'code_vars_' + v);
 	    el.appendChild(document.createTextNode(''));
             tr.appendChild(el);
@@ -1246,6 +1323,10 @@ function interpret_statement(env) {
     }
 }
 
+// -------------------------------------------------------------------
+//  Main
+// -------------------------------------------------------------------
+
 var canvas_ctx;
 function canvas() {
     if (!canvas_ctx) {
@@ -1266,6 +1347,20 @@ var env = {vars: {},
                    canvas().moveTo(x0,y0);
 	           canvas().lineTo(x1,y1);
                    canvas().stroke();
+              },
+              drawImage: function(img,x0,y0) {
+	           var gotImg = document.getElementById('file_' + img);
+	           canvas().drawImage(gotImg, x0, y0);
+	             
+              },
+	      play: function(name) {
+	           document.getElementById('file_' + name).play();
+	      },
+	      random: function() {
+	           return Math.random();
+	      },
+	      random2: function(min,max) {
+                   return Math.floor(Math.random()*(max-min))+min;
               },
               print: function(msg) {
                   console.log(msg);
@@ -1296,6 +1391,65 @@ function adjust_speed() {
         clearInterval(timer)
         timer = setInterval(run, dt);
     }
+}
+
+function dropped(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    var files = ev.dataTransfer.files;
+    for (var i = 0; i < files.length; i++) {
+        var file = files[i];
+        var reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onloadend = (function(file) {
+			return function(ev) {
+			    var bin = this.result;
+			    if (file.type.startsWith('image')) {
+		   	        var img = document.createElement('img');
+	  		        img.setAttribute('class', 'hidden');
+			        img.setAttribute('id', 'file_' + file.name);
+			        img.file = file;
+		   	        img.src = bin;
+			        document.getElementById('dropzone')
+			             .appendChild(img);
+		   	    } else if (file.type.startsWith('audio')) {
+			        var aud = document.createElement('audio');
+			        aud.setAttribute('class', 'hidden');
+			        aud.setAttribute('id', 'file_' + file.name);
+			        aud.src = bin;
+			        document.getElementById('dropzone')
+			             .appendChild(aud);
+			        fix_audio();
+	  	   	    }
+			    document.getElementById('filelist').appendChild(document.createTextNode(' '));
+			    document.getElementById('filelist').appendChild(document.createTextNode(file.name));
+                        }})(file);
+    }
+    return false;
+}
+
+var audio_elements = [];
+
+function fix_audio() {
+    audio_elements = document.getElementsByTagName('audio');
+    remove_behavior_restrictions();
+}
+
+function remove_behavior_restrictions() {
+    if (media_playback_requires_user()) {
+        for (var i = 0; i < audioElements.length; i++) {
+	    audio_elements[i].load();
+        }
+        window.addEventListener('keydown', remove_behavior_restrictions);
+        window.addEventListener('mousedown', remove_behavior_restrictions);
+        window.addEventListener('touchstart', remove_behavior_restrictions);
+    }
+}
+
+function media_playback_requires_user() {
+    var video = document.createElement('video');
+    video.play();
+    return video.paused;
 }
 
 function reset() {
