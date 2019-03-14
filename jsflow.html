@@ -1,7 +1,8 @@
 <html>
 <head>
 <style>
-<tr.code { margin: 0; padding: 0; border: 0; }
+canvas.canvas { z-index: -1; }
+tr.code { margin: 0; padding: 0; border: 0; }
 td.code { margin: 0; padding: 0; border: 0; }
 table.code { border-collapse: collapse; border-spacing: 0; }
 table.code_vars { border-collapse: collapse; table-layout: fixed; width:100%;}
@@ -10,8 +11,12 @@ tr.code_vars { vertical-align: top; text-align:left; }
 td.code_vars_1 { vertical-align: top; text-align:left; width: 20px; }
 td.code_vars_2 { vertical-align: top; text-align:left; width: 150px; overflow-wrap: break-word; }
 td.dropzone { height: 30px; width: 400px; background: orange; }
+div.addbutton { height: 30px; width: 30px; background: green; }
 input.speed { width: 300px; }
 img.hidden { display: none; }
+div.button { background: green; position: absolute; z-index: 10; display: flex; align-items: center; }
+input.button { background: none; color: white; width: 100%; height: 50%; text-align: center; }
+
 </style>
 </head>
 <body onload="start()">
@@ -29,7 +34,7 @@ img.hidden { display: none; }
 </table>
 </td>
 <td style='vertical-align: top'>
-<canvas id='canvas' width='500' height='500'>
+<canvas id='canvas' class='canvas' width='500' height='500' >
 </canvas>
 </td>
 </tr>
@@ -39,11 +44,15 @@ img.hidden { display: none; }
    <tr>
      <td>0</td><td><input class="speed" type="range" min="0" max="100" value="10" class="speed" id="speed"></td><td>Le Max</td>
      <td><input class="reset" type="submit" value="Reset" onclick='reset()'></input></td>
+     <td><label>Sync</label><input class="sync" type="checkbox" value="Sync" id='sync' onclick='toggle_sync()'></input></td>
    </tr>
   </table>
 </td>
 </tr>
-<tr><td id='filelist' class='dropzone' ondrop='dropped(event)' ondragover='allowDrop(event)'></td></tr>
+<tr>
+    <td id='filelist' class='dropzone' ondrop='dropped(event)' ondragover='allowDrop(event)'></td>
+    <td> <div ondrag='drag_add_button(event)' ondragend='drag_end_add_button(event)'> <div id='addbutton' class='addbutton' ondragstart='drag_start_add_button(event)' draggable=true> </p> </div> </td>
+</tr>
 </table>
 <div id='dropzone' style='hidden'>
 </div>
@@ -94,6 +103,58 @@ function allowDrop(ev) {
     ev.preventDefault();
     ev.stopPropagation();
 }
+
+var _keyStr = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+
+function base64ToArrayBuffer(input) {
+
+    var chr1, chr2, chr3;
+    var enc1, enc2, enc3, enc4;
+    var i = 0, j = 0;
+
+    var arr = new Uint8Array(input.length);
+
+    input = input.replace(/[^A-Za-z0-9\+\/\=]/g, "");
+
+    while (i < input.length) {
+        enc1 = this._keyStr.indexOf(input.charAt(i++));
+        enc2 = this._keyStr.indexOf(input.charAt(i++));
+        enc3 = this._keyStr.indexOf(input.charAt(i++));
+        enc4 = this._keyStr.indexOf(input.charAt(i++));
+
+        chr1 = (enc1 << 2) | (enc2 >> 4);
+        chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
+        chr3 = ((enc3 & 3) << 6) | enc4;
+
+        arr[j++] = chr1;
+        if (enc3 != 64) {
+	    arr[j++] = chr2;
+        }
+        if (enc4 != 64) {
+            arr[j++] = chr3;
+        }
+    }
+    var arr2 = new Uint8Array(j);
+    for (i = 0; i < j; i++) {
+        arr2[i] = arr[i];
+    }
+
+    return arr2.buffer;
+}
+
+function absolutePos(element) {
+    var top = 0, left = 0;
+    do {
+        top += element.offsetTop  || 0;
+        left += element.offsetLeft || 0;
+        element = element.offsetParent;
+    } while(element);
+
+    return {
+        top: top,
+        left: left
+    };
+};
 
 // -------------------------------------------------------------------
 //  Grab total text from editor
@@ -720,9 +781,9 @@ function parse_member_expression_parts(tokens, pos, tree) {
     while (parse_lookahead(tokens, pos, ['LBRACK', 'DOT'])) {
         if (parse_accept(tokens, pos, 'LBRACK', tok)) {
             var index = {};
-            if (parse_expression(token, pos, index)) {
+            if (parse_expression(tokens, pos, index)) {
                 tree.ref = { node: 'INDEX', token: tok.ref, children: [tree.ref, index.ref]};
-                if (!parse_expect(token, pos, 'RBRACK', tok)) {
+                if (!parse_expect(tokens, pos, 'RBRACK', tok)) {
 	             return false;
                 }
             }
@@ -1050,7 +1111,7 @@ function emit_expression(emitter, tree) {
 	                + emit_expression(emitter, tree.children[0])
 	                + ')';
             }
-        case 'CALL': return emit_call(emitter, tree);
+        case 'CALL': env.calls++; return emit_call(emitter, tree);
     }
 }
 
@@ -1281,9 +1342,6 @@ function interpret_statement(env) {
         env.pc_index++;
     }
 
-    // env_emitter.reset();
-    // console.log('hello: ' + current_line + ': ' + emit_statement(env_emitter, pc));
-
     switch (pc.node) {
         case 'EMPTY': break;
         case 'EXPRSTMT': current_line = pc.token.line_no; interpret_expression(env, pc.children[0]); break;
@@ -1353,8 +1411,27 @@ var env = {vars: {},
 	           canvas().drawImage(gotImg, x0, y0);
 	             
               },
-	      play: function(name) {
-	           document.getElementById('file_' + name).play();
+              button: function(name) {
+                   if (env.buttons[name]) {
+	               var mode = env.buttons[name][0];
+	               env.buttons[name].shift();
+	               return mode;
+                   } else {
+	               return '';
+	           }
+              },
+	      play: function(...name) {
+                   env.playcnt++;
+                   for (var i = 0; i < name.length; i++) {
+	   	       env.funs.play1(name[i]);
+		   }
+              },
+	      play1: function(name) {
+                   var bufSrc = audioCtx.createBufferSource();
+	           bufSrc.buffer = env.audio[name];
+	           bufSrc.connect(audioCtx.destination);
+	           bufSrc.loop = false;
+	           bufSrc.start();
 	      },
 	      random: function() {
 	           return Math.random();
@@ -1365,7 +1442,14 @@ var env = {vars: {},
               print: function(msg) {
                   console.log(msg);
               }
-           }
+           },
+	   audio: {
+           },
+           buttons: {
+           },
+	   calls: 0,
+	   playcnt: 0,
+           sync_calls: false
           };
 
 function speed_to_ms(speed) {
@@ -1380,6 +1464,9 @@ function speed_to_ms(speed) {
 
 var speed_slider = null;
 var speed = 0;
+var AudioContext = window.AudioContext || window.webkitAudioContext;
+var audioCtx = new AudioContext();
+var bufSrc = null;
 
 function adjust_speed() {
     if (!speed_slider) {
@@ -1400,30 +1487,46 @@ function dropped(ev) {
     for (var i = 0; i < files.length; i++) {
         var file = files[i];
         var reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onloadend = (function(file) {
-			return function(ev) {
+        reader.onloadend = 
+			function(ev) {
 			    var bin = this.result;
+
+			    var name = file.name;
+			    if (name.indexOf('.') != -1) {
+			        name = file.name.substr(0, name.indexOf('.'));
+	   	   	    }
+
 			    if (file.type.startsWith('image')) {
 		   	        var img = document.createElement('img');
 	  		        img.setAttribute('class', 'hidden');
-			        img.setAttribute('id', 'file_' + file.name);
+			        img.setAttribute('id', 'file_' + name);
 			        img.file = file;
 		   	        img.src = bin;
 			        document.getElementById('dropzone')
 			             .appendChild(img);
 		   	    } else if (file.type.startsWith('audio')) {
-			        var aud = document.createElement('audio');
-			        aud.setAttribute('class', 'hidden');
-			        aud.setAttribute('id', 'file_' + file.name);
-			        aud.src = bin;
-			        document.getElementById('dropzone')
-			             .appendChild(aud);
-			        fix_audio();
+	  		        audioCtx.resume();
+
+			        var binBase64 = bin.substr(bin.indexOf("base64,")+7);
+			        binBase64 = binBase64.replace(/\s/g, '');
+			        var data = base64ToArrayBuffer(binBase64);
+                                audioCtx.decodeAudioData(data,
+			            function(buffer) {
+			                env.audio[name] = buffer;
+			                var bufSrc = audioCtx.createBufferSource();
+			                bufSrc.buffer = buffer;
+			                bufSrc.connect(audioCtx.destination);
+			                bufSrc.loop = false;
+			                bufSrc.start();
+			            },
+			            function(e) {
+			                console.log('error: ' + e);
+		    	            });
 	  	   	    }
 			    document.getElementById('filelist').appendChild(document.createTextNode(' '));
-			    document.getElementById('filelist').appendChild(document.createTextNode(file.name));
-                        }})(file);
+			    document.getElementById('filelist').appendChild(document.createTextNode(name));
+                        };
+        reader.readAsDataURL(file);
     }
     return false;
 }
@@ -1462,6 +1565,118 @@ function reset() {
         env.pc = env.program_tree;
         env.pc_index = -1;
     }
+}
+
+function toggle_sync() {
+    var el = document.getElementById('sync');
+    env.sync_calls = el.checked;
+}
+
+var drag_x = 0;
+var drag_y = 0;
+var drag_dx = 0;
+var drag_dy = 0;
+
+function drag_start_add_button(ev) {
+    ev.dataTransfer.setData("Text", event.target.id);
+    drag_x = ev.pageX;
+    drag_y = ev.pageY;
+    var but = document.getElementById('addbutton');
+    var pos = absolutePos(but);
+    drag_dx = pos.left - drag_x;
+    drag_dy = pos.top - drag_y;
+}
+
+function drag_add_button(ev) {
+    ev.preventDefault();
+    document.body.ondragover = allowDrop;
+    drag_x = ev.pageX;
+    drag_y = ev.pageY;
+}
+
+function drag_end_add_button(ev) {
+    var canvas = document.getElementById('canvas');
+    var newButton = document.createElement('div');
+    var textObj = document.createElement('input');
+    textObj.setAttribute('class', 'button');
+    newButton.appendChild(textObj);
+    var body = document.body;
+    body.ondragover = null;
+    var pos = absolutePos(body);
+    newButton.setAttribute('class', 'button');
+    newButton.draggable = true;
+    newButton.ondrag = drag_move_button;
+    newButton.ondragstart = drag_start_move_button;
+    newButton.ondragend = drag_end_move_button;
+    newButton.style.position = 'absolute';
+    newButton.style.left = drag_x + drag_dx;
+    newButton.style.top = drag_y + drag_dy;
+    newButton.style.width = 30;
+    newButton.style.height = 30;
+    newButton.onclick = button_click;
+    newButton.onmousedown = button_down;
+    newButton.onmouseup = button_up;
+    document.body.appendChild(newButton);
+}
+
+var button_moved = null;
+
+function drag_start_move_button(ev) {
+    button_moved = ev.target || ev.srcElement;
+    ev.dataTransfer.setData("Text", event.target.id);
+    drag_x = ev.pageX;
+    drag_y = ev.pageY;
+    var pos = absolutePos(button_moved);
+    drag_dx = pos.left - drag_x;
+    drag_dy = pos.top - drag_y;
+}
+
+function drag_move_button(ev) {
+    ev.preventDefault();
+    document.body.ondragover = allowDrop;
+    drag_x = ev.pageX;
+    drag_y = ev.pageY;
+    var button = ev.target || ev.srcElement;
+    button.style.left = drag_x + drag_dx;
+    button.style.top = drag_y + drag_dy;
+}
+
+function drag_end_move_button(ev) {
+    button_moved.style.left = drag_x + drag_dx;
+    button_moved.style.top = drag_y + drag_dy;
+    button_moved = null;
+    document.body.ondragover = null;
+}
+
+function do_button(ev, mode) {
+    var source = event.target || event.srcElement;
+    var input = null;
+    if (source.tagName == 'INPUT') {
+        input = source;
+    } else {			  
+        if (source.childNodes && source.childNodes[0]) {
+            input =  source.childNodes[0];
+        }
+    }
+    if (input && input.value) {
+        var label = input.value;
+        if (!env.buttons[label]) {
+            env.buttons[label] = [];   
+        }
+        env.buttons[label].push(mode);
+    }
+}
+
+function button_down(ev) {
+   do_button(ev, 'down');
+}
+
+function button_up(ev) {
+   do_button(ev, 'up');
+}
+
+function button_click(ev) {
+   do_button(ev, 'click');
 }
 
 function run() {
@@ -1515,7 +1730,17 @@ function run() {
         }
         eval(env.cached_program_script);
     } else {
-        interpret_statement(env);
+        if (env.sync_calls) {
+            var calls = env.calls;
+            for (var i = 0; i < 10 && calls == env.calls; i++) {
+                interpret_statement(env);
+            }
+        } else {
+            var line = current_line;
+            for (var i = 0; i < 10 && line == current_line; i++) {
+                interpret_statement(env);
+            }
+	}
     }
 
     if (speed < 100) update_vars_display(env);
