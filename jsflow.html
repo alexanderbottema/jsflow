@@ -1,6 +1,9 @@
 <html>
 <head>
 <style>
+textarea.linenumbers { background-color: transparent; vertical-align: top; font-family: monospace; font-size: 14px; border: 0; resize: none; z-index: 100; line-height: 1; margin: 0; }
+div.cursor { foreground-color: transparent; background-color: #d4e9ab; position: absolute; width: 30px; height: 14px; z-index: -1; }
+textarea.code { font-family: monospace; font-size: 14px; resize: none; line-height: 1; margin: 0; border: 1; }
 canvas.canvas { z-index: -1; }
 tr.code { margin: 0; padding: 0; border: 0; }
 td.code { margin: 0; padding: 0; border: 0; }
@@ -22,16 +25,22 @@ input.button { background: none; color: white; width: 100%; height: 50%; text-al
 <body onload="start()">
 
 <table>
-<tr> <td style='vertical-align: top'>
-<table class='code' id='codearea' cellspacing=0>
-<tr class='code' id='linewhole1'>
-  <td class='code' id='linelabel1'>1</td>
-  <td class='code'><input class='code' id='line1' size=40 onkeydown='code_change_keydown()' onkeypress='code_change_keydown()' onkeyup='code_change_keyup()' type="text" spellcheck="false"></input></td></tr>
+<tr>
+<td style='vertical-align: top'>
+<table>
+<tr>
+<td>
+<td>
+<textarea class='linenumbers' id='linenumbers' rows=30 cols=3 disabled></textarea>
+</td>
+<td>
+<textarea class='code' id='codearea' rows=30 cols=45 spellcheck='false' onkeyup='code_keyup(event)' onscroll='code_scroll(event)'></textarea>
+</td>
+</tr>
 </table>
 </td>
 <td style='vertical-align: top'>
-<table id='code_vars' class='code_vars'>
-</table>
+<table id='code_vars' class='code_vars'></table>
 </td>
 <td style='vertical-align: top'>
 <canvas id='canvas' class='canvas' width='500' height='500' >
@@ -56,6 +65,7 @@ input.button { background: none; color: white; width: 100%; height: 50%; text-al
 </table>
 <div id='dropzone' style='hidden'>
 </div>
+<div class='cursor' id='cursor'></div>
 
 
 <script>
@@ -162,14 +172,8 @@ function absolutePos(element) {
 
 function get_text() {
     var text = '{';
-    for (var i = 1;;i++) {
-       var line_el = document.getElementById('line' + i);
-       if (!line_el) {
-           break;
-       }
-       text += line_el.value + '\n';
-    }
-    return text + '}';
+    var codeEl = document.getElementById('codearea');
+    return '{' + codeEl.value + '}';
 }
 
 // -------------------------------------------------------------------
@@ -1277,7 +1281,7 @@ function update_vars_display(env) {
             tr.appendChild(el);
             code_vars_table.appendChild(tr);
         }
-        el.innerText = env.vars[v];
+        el.innerText = JSON.stringify(env.vars[v]);
     }
 }
 
@@ -1746,133 +1750,54 @@ function run() {
     if (speed < 100) update_vars_display(env);
 
     if (speed < 100 && current_line != prev_line) {
-        var current_label_el = document.getElementById('linelabel' + current_line);
-        var prev_label_el = document.getElementById('linelabel' + prev_line);
-        if (prev_label_el) {
-            prev_label_el.style.backgroundColor = 'transparent';
-        }
-        if (current_label_el) {
-            current_label_el.style.backgroundColor = 'red';
-        }
+        code_update_cursor();
         prev_line = current_line;
     } else if (speed == 100 && prev_line != 0) {
-        var prev_label_el = document.getElementById('linelabel' + prev_line);
-        if (prev_label_el) {
-            prev_label_el.style.backgroundColor = 'transparent';
-        }
+	code_update_cursor();
         prev_line = 0;        
     }
 }
 
-function parse_line_no(id) {
-    return parseInt(id.substring(4));
+function code_scroll(ev) {
+    var source = ev.target || ev.srcElement;
+    var numbersEl = source.parentNode.previousElementSibling.childNodes[1];
+    numbersEl.scrollTop = source.scrollTop;
 }
 
-function find_last_line_no() {
-    for (var i = 1; i < 1000; i++) {
-        if (!document.getElementById('line' + i)) {
-	    return i - 1;
-        }
+function code_keyup(ev) {
+    var source = ev.target || ev.srcElement;
+    var lines = source.value.split('\n');
+    var numbers = '';
+    for (var i = 0; i < lines.length; i++) {
+        numbers += (i+1) + '\n';
     }
+    var numbersEl = document.getElementById('linenumbers');
+    numbersEl.value = numbers;
+    numbersEl.scrollTop = source.scrollTop;
+
+    code_update_cursor();
+
+    has_changed = true;
 }
 
-function new_line(line_no, at) {
-    var tr = document.createElement('tr');
-    tr.setAttribute('class', 'code');
-    tr.setAttribute('id', 'linewhole' + line_no);
-    var td1 = document.createElement('td');
-    td1.setAttribute('id', 'linelabel' + line_no);
-    td1.setAttribute('class', 'code');
-    td1.appendChild(document.createTextNode(line_no));
-    var td2 = document.createElement('td');
-    td2.setAttribute('class', 'code');
-    var l = document.createElement('input');
-    l.setAttribute('class', 'code');
-    l.setAttribute('id', 'line' + line_no);
-    l.setAttribute('size', 40);
-    l.setAttribute('type', 'text');
-    l.setAttribute('onkeyup', 'code_change_keyup()');
-    l.setAttribute('onkeydown', 'code_change_keydown()');
-    l.setAttribute('onkeypress', 'code_change_keydown()');
-    l.setAttribute('spellcheck', 'false');
-    td2.appendChild(l);
-    tr.appendChild(td1);
-    tr.appendChild(td2);
-    var codearea = document.getElementById('codearea');
-    if (at) {
-        codearea.insertBefore(tr, at);
+function code_update_cursor() {
+    var codeEl = document.getElementById('codearea');
+    var cursorEl = document.getElementById('cursor');
+    var numbersEl = document.getElementById('linenumbers');
+
+    var dy = (current_line-1)*14 - numbersEl.scrollTop;
+    if (dy < 0 || dy >= 14*codeEl.rows) {
+        cursorEl.style.display = 'none';
     } else {
-        codearea.appendChild(tr);
-    }
-    return l;
-}
-
-function insert_line(line_no) {
-    var i = find_last_line_no();
-    var at = document.getElementById('linewhole'+(line_no+1));
-    for (; i > line_no; i--) {
-        var lineEl = document.getElementById('line'+i);
-        lineEl.setAttribute('id', 'line'+(i+1));
-        var lineLabelEl = document.getElementById('linelabel'+i);
-        lineLabelEl.innerText = (i+1);
-        lineLabelEl.setAttribute('id', 'linelabel'+(i+1));
-        var lineWholeEl = document.getElementById('linewhole'+i);
-        lineWholeEl.setAttribute('id', 'linewhole'+(i+1));
-    }
-    new_line(line_no+1, at);
-}
-
-function code_change_keydown() {
-    var keycode = event.keyCode;
-    if (keycode == 40 || keycode == 38 || keycode == 13) {
-        if (event.shiftKey) {
-            return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
+        var offset = absolutePos(numbersEl);
+        cursorEl.style.display = 'inline-block';
+        cursorEl.style.width = 40;
+        cursorEl.style.height = 14;
+        cursorEl.style.left = offset.left;
+        cursorEl.style.top = offset.top + dy;
     }
 }
 
-function code_change_keyup() {
-  var source = event.target || event.srcElement;
-  var keycode = event.keyCode;
-  var line_no = parse_line_no(source.id);
-
-  has_changed = true;
-
-  if (keycode == 40 || keycode == 38) {
-      if (event.shiftKey) {
-          return;
-      }
-
-      var go_line = (keycode == 40) ? line_no + 1 : line_no - 1;
-      if (go_line < 1) go_line = 1;
-      var next_source = document.getElementById('line' + go_line);
-      if (!next_source) {
-           // Add new line
-           next_source = new_line(go_line);
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      next_source.focus();
-  }
-
-  if (keycode == 13) {
-      var go_line = line_no + 1;
-      insert_line(line_no);
-      event.preventDefault();
-      event.stopPropagation();
-      var next_source = document.getElementById('line' + go_line);
-      if (next_source) {
-          next_source.value = source.value.substring(source.selectionStart);
-          source.value = source.value.substring(0, source.selectionStart);
-          next_source.focus();
-          next_source.setSelectionRange(0,0);
-         
-      }
-  }
-}
 </script>
 
 </body>
