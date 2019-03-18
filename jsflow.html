@@ -19,6 +19,7 @@ input.speed { width: 300px; }
 img.hidden { display: none; }
 div.button { background: green; position: absolute; z-index: 10; display: flex; align-items: center; }
 input.button { background: none; color: white; width: 100%; height: 50%; text-align: center; }
+audio.audioitem { background: red; color: red; width: 20px; height: 10px; display: table-cell; }
 
 </style>
 </head>
@@ -62,6 +63,25 @@ input.button { background: none; color: white; width: 100%; height: 50%; text-al
     <td id='filelist' class='dropzone' ondrop='dropped(event)' ondragover='allowDrop(event)'></td>
     <td> <div ondrag='drag_add_button(event)' ondragend='drag_end_add_button(event)'> <div id='addbutton' class='addbutton' ondragstart='drag_start_add_button(event)' draggable=true> </p> </div> </td>
 </tr>
+<tr>
+   <td>      
+    <img src='http://www.blecktornet.se/jsflow/img/spaceship.png'></img>
+    <img src='http://www.blecktornet.se/jsflow/img/blackcat.png'></img>    
+    </td>
+</tr>
+<tr>
+    
+   <td>
+    <a href='http://www.blecktornet.se/jsflow/snd/909BD.wav'>909BD</a>
+    <a href='http://www.blecktornet.se/jsflow/snd/909SD.wav'>909SD</a>
+    <a href='http://www.blecktornet.se/jsflow/snd/909HH.wav'>909HH</a>
+    <a href='http://www.blecktornet.se/jsflow/snd/909HHOD.wav'>909OH</a>
+    <a href='http://www.blecktornet.se/jsflow/snd/909Ride.wav'>909Ride</a>
+    <a href='http://www.blecktornet.se/jsflow/snd/909Clap.wav'>909Clap</a>
+    <a href='http://www.blecktornet.se/jsflow/snd/909Crash.wav'>909Crash</a>
+    </td>
+</tr>    
+
 </table>
 <div id='dropzone' style='hidden'>
 </div>
@@ -1411,7 +1431,7 @@ var env = {vars: {},
                    canvas().stroke();
               },
               drawImage: function(img,x0,y0) {
-	           var gotImg = document.getElementById('file_' + img);
+	           var gotImg = document.getElementById('resource_' + img);
 	           canvas().drawImage(gotImg, x0, y0);
 	             
               },
@@ -1504,8 +1524,76 @@ function adjust_speed() {
 }
 
 function dropped(ev) {
+    audioCtx.resume();
+    
     ev.preventDefault();
     ev.stopPropagation();
+    if (ev.dataTransfer.files && ev.dataTransfer.files.length > 0) {
+	droppedFile(ev);
+	return false;
+    }
+    var src = ev.dataTransfer.getData("text/plain");
+    var imgExt = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg'];
+    var audExt = ['.wav', '.aif', '.mp3'];
+    var allExt = imgExt;
+    allExt = allExt.concat(audExt);
+
+    var foundExt = null;
+    for (var ext in allExt) {
+	if (src.indexOf(allExt[ext]) != -1) {
+	    foundExt = allExt[ext];
+	    break;
+	}
+    }
+    if (!foundExt) {
+	alert('Unrecognized media: ' + src);
+	return;
+    }
+    var isImage = imgExt.indexOf(foundExt) != -1;
+
+    var atIndex = src.indexOf(foundExt) - 1;
+    while (atIndex > 0) {
+        var ch = src.charCodeAt(atIndex);
+	if (!is_alnum(ch) && ch != 95 && ch != 43 && ch != 45) {
+	    break;
+	}
+	atIndex--;
+    }
+    atIndex++;
+    var name = src.substr(atIndex, src.indexOf(foundExt) - atIndex);
+
+    var el = document.createElement(isImage ? "img" : "audio");
+    el.setAttribute('class', 'hidden');
+    el.setAttribute('id', 'resource_' + name);
+    el.src = src;
+    document.getElementById('dropzone').appendChild(el);
+    document.getElementById('filelist').appendChild(document.createTextNode(name));
+
+    /*
+    if (!isImage) {
+	
+	var binBase64 = bin.substr(bin.indexOf("base64,")+7);
+	binBase64 = binBase64.replace(/\s/g, '');
+	var data = base64ToArrayBuffer(binBase64);
+        audioCtx.decodeAudioData(data,
+			         function(buffer) {
+			             env.audio[name] = buffer;
+			             var bufSrc = audioCtx.createBufferSource();
+			             bufSrc.buffer = buffer;
+			             bufSrc.connect(audioCtx.destination);
+			             bufSrc.loop = false;
+			             bufSrc.start();
+			         },
+			         function(e) {
+			             console.log('error: ' + e);
+		    	         });
+    }
+*/
+    
+    return false;
+}
+
+function droppedFile(ev) {
     var files = ev.dataTransfer.files;
     for (var i = 0; i < files.length; i++) {
         var file = files[i];
@@ -1522,7 +1610,7 @@ function dropped(ev) {
 			    if (file.type.startsWith('image')) {
 		   	        var img = document.createElement('img');
 	  		        img.setAttribute('class', 'hidden');
-			        img.setAttribute('id', 'file_' + name);
+			        img.setAttribute('id', 'resource_' + name);
 			        img.file = file;
 		   	        img.src = bin;
 			        document.getElementById('dropzone')
@@ -1551,7 +1639,6 @@ function dropped(ev) {
                         };
         reader.readAsDataURL(file);
     }
-    return false;
 }
 
 var audio_elements = [];
