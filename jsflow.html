@@ -65,7 +65,7 @@ audio.audioitem { background: red; color: red; width: 20px; height: 10px; displa
 </tr>
 <tr>
    <td>      
-    <img src='http://www.blecktornet.se/jsflow/img/spaceship.png'></img>
+    <img alt="spaceship" name="spaceship" src='http://www.blecktornet.se/jsflow/img/spaceship.png'></img>
     <img src='http://www.blecktornet.se/jsflow/img/blackcat.png'></img>    
     </td>
 </tr>
@@ -1462,11 +1462,18 @@ var env = {vars: {},
 		   }
               },
 	      play1: function(name) {
-                   var bufSrc = audioCtx.createBufferSource();
-	           bufSrc.buffer = env.audio[name];
-	           bufSrc.connect(audioCtx.destination);
-	           bufSrc.loop = false;
-	           bufSrc.start();
+                   var buf = env.audio[name];
+                   var bufSrc = null;
+                   if (buf instanceof AudioBuffer) {
+                       bufSrc = audioCtx.createBufferSource();
+	               bufSrc.buffer = buf;
+  	               bufSrc.loop = false;
+	               bufSrc.connect(audioCtx.destination);
+	               bufSrc.start();
+	           } else {
+		       // buf.load();
+                       // buf.play();
+                   }
 	      },
 	      random: function() {
 	           return Math.random();
@@ -1525,14 +1532,27 @@ function adjust_speed() {
 
 function dropped(ev) {
     audioCtx.resume();
-    
+
     ev.preventDefault();
     ev.stopPropagation();
-    if (ev.dataTransfer.files && ev.dataTransfer.files.length > 0) {
+    if (ev.dataTransfer.files && ev.dataTransfer.files.length > 0 &&
+        ev.dataTransfer.files[0].name.substr(0,6) != 'image.') {
 	droppedFile(ev);
 	return false;
     }
+
     var src = ev.dataTransfer.getData("text/plain");
+    if (!src) {
+        src = ev.dataTransfer.getData("text/html");
+        var srcIndex = src.indexOf('src=');
+        if (srcIndex != -1) {
+            var quoteChar = src.charCodeAt(srcIndex+4);
+            var srcIndexEnd = src.indexOf(String.fromCharCode(quoteChar), srcIndex+5);
+   	    var str = src.substr(srcIndex+5, srcIndexEnd-(srcIndex+5));
+            src = str;
+        }
+    }
+
     var imgExt = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg'];
     var audExt = ['.wav', '.aif', '.mp3'];
     var allExt = imgExt;
@@ -1562,34 +1582,27 @@ function dropped(ev) {
     atIndex++;
     var name = src.substr(atIndex, src.indexOf(foundExt) - atIndex);
 
-    var el = document.createElement(isImage ? "img" : "audio");
-    el.setAttribute('class', 'hidden');
-    el.setAttribute('id', 'resource_' + name);
-    el.src = src;
-    document.getElementById('dropzone').appendChild(el);
-    document.getElementById('filelist').appendChild(document.createTextNode(name));
-
-    /*
-    if (!isImage) {
-	
-	var binBase64 = bin.substr(bin.indexOf("base64,")+7);
-	binBase64 = binBase64.replace(/\s/g, '');
-	var data = base64ToArrayBuffer(binBase64);
-        audioCtx.decodeAudioData(data,
-			         function(buffer) {
-			             env.audio[name] = buffer;
-			             var bufSrc = audioCtx.createBufferSource();
-			             bufSrc.buffer = buffer;
-			             bufSrc.connect(audioCtx.destination);
-			             bufSrc.loop = false;
-			             bufSrc.start();
-			         },
-			         function(e) {
-			             console.log('error: ' + e);
-		    	         });
-    }
-*/
+    if (isImage) {
+        var el = new Image();
+        el.setAttribute('class', 'hidden');
+        el.setAttribute('id', 'resource_' + name);
+        el.src = src;
+        document.getElementById('dropzone').appendChild(el);
+        document.getElementById('filelist').appendChild(document.createTextNode(name));
     
+    } else {
+        var xdh = new XMLHttpRequest();
+        xdh.responseType = 'arraybuffer';
+        xdh.onreadystatechange = function() {
+            if (this.readyState == 4 && this.status == 200) {
+                decodeAudio(this.response);
+                document.getElementById('filelist').appendChild(document.createTextNode(name));
+            }
+        };
+        xdh.open('GET', src, true);
+        xdh.send();
+    }
+
     return false;
 }
 
@@ -1618,27 +1631,36 @@ function droppedFile(ev) {
 		   	    } else if (file.type.startsWith('audio')) {
 	  		        audioCtx.resume();
 
-			        var binBase64 = bin.substr(bin.indexOf("base64,")+7);
-			        binBase64 = binBase64.replace(/\s/g, '');
-			        var data = base64ToArrayBuffer(binBase64);
-                                audioCtx.decodeAudioData(data,
-			            function(buffer) {
-			                env.audio[name] = buffer;
-			                var bufSrc = audioCtx.createBufferSource();
-			                bufSrc.buffer = buffer;
-			                bufSrc.connect(audioCtx.destination);
-			                bufSrc.loop = false;
-			                bufSrc.start();
-			            },
-			            function(e) {
-			                console.log('error: ' + e);
-		    	            });
+			        decodeAudio(bin);
 	  	   	    }
 			    document.getElementById('filelist').appendChild(document.createTextNode(' '));
 			    document.getElementById('filelist').appendChild(document.createTextNode(name));
                         };
         reader.readAsDataURL(file);
     }
+}
+
+function decodeAudio(bin) {
+    var data = null;
+    if (typeof bin == 'string') {
+        var binBase64 = bin.substr(bin.indexOf("base64,")+7);
+        binBase64 = binBase64.replace(/\s/g, '');
+        data = base64ToArrayBuffer(binBase64);
+    } else {
+        data = bin;
+    }
+    audioCtx.decodeAudioData(data,
+         function(buffer) {
+             env.audio[name] = buffer;
+             var bufSrc = audioCtx.createBufferSource();
+             bufSrc.buffer = buffer;
+             bufSrc.connect(audioCtx.destination);
+             bufSrc.loop = false;
+             bufSrc.start();
+         },
+         function(e) {
+             console.log('error: ' + e);
+         });
 }
 
 var audio_elements = [];
